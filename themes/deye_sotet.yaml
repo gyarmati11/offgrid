@@ -1,0 +1,27 @@
+# Sötét, kék-fekete téma a Deye dashboardhoz (a mintakép stílusában)
+# Hely: /config/themes/deye_sotet.yaml   configuration.yaml-ba:
+#   frontend:
+#     themes: !include_dir_merge_named themes
+deye_sotet:
+  primary-background-color: "#0B1220"
+  secondary-background-color: "#111A2C"
+  lovelace-background: "radial-gradient(ellipse at 50% 35%, #1C2B45 0%, #0B1220 60%, #070B14 100%) fixed"
+  card-background-color: "rgba(23, 32, 51, 0.82)"
+  ha-card-background: "rgba(23, 32, 51, 0.82)"
+  ha-card-border-radius: "18px"
+  ha-card-border-color: "rgba(255,255,255,0.08)"
+  ha-card-box-shadow: "0 6px 24px rgba(0,0,0,0.35)"
+  primary-color: "#38BDF8"
+  accent-color: "#FBBF24"
+  primary-text-color: "#E5E7EB"
+  secondary-text-color: "#9CA3AF"
+  divider-color: "rgba(255,255,255,0.08)"
+  app-header-background-color: "#0B1220"
+  app-header-text-color: "#E5E7EB"
+  state-icon-color: "#93C5FD"
+  sidebar-background-color: "#0B1220"
+  sidebar-text-color: "#CBD5E1"
+  sidebar-icon-color: "#94A3B8"
+  input-fill-color: "rgba(255,255,255,0.05)"
+  modes:
+    dark: {}

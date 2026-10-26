@@ -1,0 +1,2061 @@
+# =============================================================================
+#  DEYE OFF-GRID DASHBOARD – "Otthon" (hétköznapi) + "Szerviz" (professzionális)
+#  Beillesztés: Beállítások → Irányítópultok → Új → "Kezdés üresen" →
+#               ⋮ → Szerkesztés → ⋮ → Nyers konfigurációs szerkesztő → ide másold
+#  Szükséges HACS elemek:  deye-haz-card (saját), bubble-card, apexcharts-card,
+#                          sunsynk-power-flow-card (csak a Szerviz nézetben)
+# =============================================================================
+title: Napenergia
+views:
+  # ===========================================================================
+  #  1. OTTHON – egyszerű, hétköznapi nézet
+  # ===========================================================================
+  - title: Otthon
+    path: otthon
+    icon: mdi:home-lightning-bolt
+    theme: deye_sotet
+    type: sections
+    max_columns: 3
+    sections:
+      # ---------------------------------------------------------- MOST
+      - type: grid
+        cards:
+          - type: heading
+            heading: Most
+            icon: mdi:flash
+          - type: custom:deye-haz-card
+            # Minden beállítás alapértelmezett (a saját telekhez igazítva).
+            # Felülírható pl.: strings, positions, tap, entities, night – lásd a kártya README-jét.
+            grid_options: { columns: full }
+          - type: markdown
+            grid_options: { columns: full }
+            content: |
+              {% set e = 'sensor.deye_fogyasztasi_ajanlas' %}
+              <ha-alert alert-type="{{ state_attr(e,'tipus') or 'info' }}" title="{{ state_attr(e,'cim') }}">
+              {{ state_attr(e,'uzenet') }}
+              </ha-alert>
+          - type: tile
+            entity: sensor.deye_pv_teljesitmeny
+            name: Napelem
+            icon: mdi:solar-power-variant
+            color: amber
+            grid_options: { columns: 6 }
+          - type: tile
+            entity: sensor.deye_fogyasztas_teljesitmeny
+            name: Ház fogyasztás
+            color: blue
+            grid_options: { columns: 6 }
+          - type: tile
+            entity: sensor.deye_akku_soc
+            name: Akku
+            state_content: [state, allapot]
+            color: green
+            grid_options: { columns: full }
+          - type: tile
+            entity: sensor.deye_halozat_teljesitmeny
+            name: Hálózat
+            color: red
+            grid_options: { columns: 6 }
+          - type: tile
+            entity: sensor.deye_elorejelzes_ma_hatralevo
+            name: Ma még jön
+            icon: mdi:weather-sunset-down
+            color: orange
+            grid_options: { columns: 6 }
+
+      # ---------------------------------------------------------- MA
+      - type: grid
+        cards:
+          - type: heading
+            heading: Ma
+            icon: mdi:calendar-today
+          - type: tile
+            entity: sensor.deye_termeles_napi
+            name: Termelés
+            icon: mdi:solar-power
+            color: amber
+            grid_options: { columns: 6 }
+          - type: tile
+            entity: sensor.deye_fogyasztas_napi
+            name: Fogyasztás
+            icon: mdi:home-lightning-bolt-outline
+            color: blue
+            grid_options: { columns: 6 }
+          - type: tile
+            entity: sensor.deye_vetel_napi
+            name: Hálózatból
+            icon: mdi:transmission-tower-import
+            color: red
+            grid_options: { columns: 6 }
+          - type: tile
+            entity: sensor.deye_megtakaritas_napi
+            name: Megtakarítás
+            icon: mdi:piggy-bank
+            color: green
+            grid_options: { columns: 6 }
+          - type: gauge
+            entity: sensor.deye_onellatas_napi
+            name: Önellátás ma
+            min: 0
+            max: 100
+            needle: true
+            severity: { green: 80, yellow: 50, red: 0 }
+            grid_options: { columns: full }
+          - type: custom:apexcharts-card
+            grid_options: { columns: full }
+            header: { show: true, title: Mai teljesítmény, show_states: false }
+            graph_span: 24h
+            span: { start: day }
+            now: { show: true, label: Most, color: "#888" }
+            apex_config:
+              chart: { height: 260 }
+              legend: { show: true, position: bottom }
+              stroke: { curve: smooth }
+            yaxis:
+              - id: w
+                min: 0
+                decimals: 0
+                apex_config: { title: { text: W } }
+              - id: soc
+                opposite: true
+                min: 0
+                max: 100
+                decimals: 0
+                apex_config: { title: { text: "%" } }
+            series:
+              - entity: sensor.deye_pv_teljesitmeny
+                name: Napelem
+                yaxis_id: w
+                type: area
+                color: "#F5A623"
+                opacity: 0.35
+                stroke_width: 2
+                group_by: { func: avg, duration: 5min }
+              - entity: sensor.deye_fogyasztas_teljesitmeny
+                name: Fogyasztás
+                yaxis_id: w
+                type: line
+                color: "#3B82F6"
+                stroke_width: 2
+                group_by: { func: avg, duration: 5min }
+              - entity: sensor.deye_akku_soc
+                name: Akku %
+                yaxis_id: soc
+                type: line
+                color: "#22C55E"
+                stroke_width: 2
+                group_by: { func: last, duration: 5min }
+
+      # ---------------------------------------------------------- ELŐREJELZÉS
+      - type: grid
+        cards:
+          - type: heading
+            heading: Előrejelzés – 5 nap
+            icon: mdi:weather-partly-cloudy
+          - type: custom:apexcharts-card
+            grid_options: { columns: full }
+            header: { show: false }
+            graph_span: 5d
+            span: { start: day }
+            apex_config:
+              chart: { height: 230 }
+              legend: { show: true, position: bottom }
+              plotOptions: { bar: { borderRadius: 6, columnWidth: "55%" } }
+              dataLabels: { enabled: true, enabledOnSeries: [0] }
+              xaxis: { labels: { format: ddd } }
+            yaxis:
+              - min: 0
+                decimals: 0
+                apex_config: { title: { text: kWh } }
+            series:
+              - entity: sensor.deye_elorejelzes_napok
+                name: Várható termelés
+                type: column
+                color: "#F5A623"
+                data_generator: |
+                  return (entity.attributes.napok || []).map(n =>
+                    [new Date(n.datum + 'T12:00:00').getTime(), n.kwh]);
+              - entity: sensor.deye_varhato_napi_fogyasztas
+                name: Várható fogyasztás
+                type: line
+                color: "#3B82F6"
+                stroke_width: 3
+                data_generator: |
+                  const v = parseFloat(entity.state) || 0;
+                  const t = new Date(); t.setHours(12,0,0,0);
+                  return [0,1,2,3,4].map(i => [t.getTime() + i*86400000, v]);
+          - type: markdown
+            grid_options: { columns: full }
+            content: |
+              {% set avg = states('sensor.deye_varhato_napi_fogyasztas') | float(10) %}
+              | Nap | | Várható | Mérleg |
+              |:--|:--:|--:|--:|
+              {% for n in state_attr('sensor.deye_elorejelzes_napok','napok') or [] -%}
+              {% set m = (n.kwh - avg) | round(1) -%}
+              | **{{ n.nap }}** <small>{{ n.datum[5:] | replace('-','.') }}{{ ' *' if n.forras == 'becslés' }}</small> | {{ n.emoji }} | {{ n.kwh }} kWh | {{ '🟢 +' ~ m if m >= 0 else '🔴 ' ~ m }} |
+              {% endfor %}
+
+              <small>Átlagos napi fogyasztás: {{ avg }} kWh · * = időjárás alapú becslés</small>
+          - type: weather-forecast
+            entity: weather.forecast_home
+            forecast_type: daily
+            show_current: true
+            show_forecast: true
+            grid_options: { columns: full }
+
+      # ---------------------------------------------------------- STATISZTIKA
+      - type: grid
+        column_span: 3
+        cards:
+          - type: heading
+            heading: Statisztika
+            icon: mdi:chart-bar
+          - type: markdown
+            grid_options: { columns: full }
+            content: |
+              {% set p = [('Ma','napi'),('Hét','heti'),('Hónap','havi'),('Év','eves')] %}
+              {% macro n(e, d=1) %}{{ '{:,.{}f}'.format(states(e) | float(0), d) | replace(',', ' ') }}{% endmacro %}
+              | | Ma | Hét | Hónap | Év |
+              |:--|--:|--:|--:|--:|
+              | ☀️ Termelés (kWh) | {% for c,k in p %}{{ n('sensor.deye_termeles_'~k) }} | {% endfor %}
+              | 🏠 Fogyasztás (kWh) | {% for c,k in p %}{{ n('sensor.deye_fogyasztas_'~k) }} | {% endfor %}
+              | ⚡ Hálózatból (kWh) | {% for c,k in p %}{{ n('sensor.deye_vetel_'~k) }} | {% endfor %}
+              | 🛡️ Önellátás | {% for c,k in p %}**{{ n('sensor.deye_onellatas_'~k, 0) }} %** | {% endfor %}
+              | 💰 Megtakarítás (Ft) | {% for c,k in p %}**{{ n('sensor.deye_megtakaritas_'~k, 0) }}** | {% endfor %}
+              | 🧾 Hálózati költség (Ft) | {% for c,k in p %}{{ n('sensor.deye_koltseg_'~k, 0) }} | {% endfor %}
+          - type: tile
+            entity: input_select.deye_idoszak
+            name: Grafikon időszak
+            hide_state: true
+            grid_options: { columns: full }
+            features:
+              - type: select-options
+
+          # --- MA (óránként)
+          - type: conditional
+            grid_options: { columns: full }
+            conditions: [{ condition: state, entity: input_select.deye_idoszak, state: Ma }]
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistics-graph
+                  title: Energia ma – óránként (kWh)
+                  chart_type: bar
+                  period: hour
+                  days_to_show: 1
+                  stat_types: [change]
+                  entities:
+                    - { entity: sensor.deye_termeles_osszesen, name: Termelés }
+                    - { entity: sensor.deye_fogyasztas_osszesen, name: Fogyasztás }
+                    - { entity: sensor.deye_halozati_vetel_osszesen, name: Hálózat }
+                - type: statistics-graph
+                  title: Forint ma – óránként
+                  chart_type: bar
+                  period: hour
+                  days_to_show: 1
+                  stat_types: [change]
+                  entities:
+                    - { entity: sensor.deye_megtakaritas_osszesen, name: Megtakarítás }
+                    - { entity: sensor.deye_halozati_koltseg_osszesen, name: Hálózati költség }
+
+          # --- HÉT (naponta)
+          - type: conditional
+            grid_options: { columns: full }
+            conditions: [{ condition: state, entity: input_select.deye_idoszak, state: Hét }]
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistics-graph
+                  title: Energia – utolsó 7 nap (kWh)
+                  chart_type: bar
+                  period: day
+                  days_to_show: 7
+                  stat_types: [change]
+                  entities:
+                    - { entity: sensor.deye_termeles_osszesen, name: Termelés }
+                    - { entity: sensor.deye_fogyasztas_osszesen, name: Fogyasztás }
+                    - { entity: sensor.deye_halozati_vetel_osszesen, name: Hálózat }
+                - type: statistics-graph
+                  title: Forint – utolsó 7 nap
+                  chart_type: bar
+                  period: day
+                  days_to_show: 7
+                  stat_types: [change]
+                  entities:
+                    - { entity: sensor.deye_megtakaritas_osszesen, name: Megtakarítás }
+                    - { entity: sensor.deye_halozati_koltseg_osszesen, name: Hálózati költség }
+                - type: statistics-graph
+                  title: Önellátás – utolsó 7 nap (%)
+                  chart_type: line
+                  period: day
+                  days_to_show: 7
+                  stat_types: [mean]
+                  entities:
+                    - { entity: sensor.deye_onellatas_napi_zaro, name: Önellátás }
+
+          # --- HÓNAP (naponta)
+          - type: conditional
+            grid_options: { columns: full }
+            conditions: [{ condition: state, entity: input_select.deye_idoszak, state: Hónap }]
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistics-graph
+                  title: Energia – utolsó 30 nap (kWh)
+                  chart_type: bar
+                  period: day
+                  days_to_show: 30
+                  stat_types: [change]
+                  entities:
+                    - { entity: sensor.deye_termeles_osszesen, name: Termelés }
+                    - { entity: sensor.deye_fogyasztas_osszesen, name: Fogyasztás }
+                    - { entity: sensor.deye_halozati_vetel_osszesen, name: Hálózat }
+                - type: statistics-graph
+                  title: Forint – utolsó 30 nap
+                  chart_type: bar
+                  period: day
+                  days_to_show: 30
+                  stat_types: [change]
+                  entities:
+                    - { entity: sensor.deye_megtakaritas_osszesen, name: Megtakarítás }
+                    - { entity: sensor.deye_halozati_koltseg_osszesen, name: Hálózati költség }
+                - type: statistics-graph
+                  title: Önellátás – utolsó 30 nap (%)
+                  chart_type: line
+                  period: day
+                  days_to_show: 30
+                  stat_types: [mean]
+                  entities:
+                    - { entity: sensor.deye_onellatas_napi_zaro, name: Önellátás }
+
+          # --- ÉV (havonta)
+          - type: conditional
+            grid_options: { columns: full }
+            conditions: [{ condition: state, entity: input_select.deye_idoszak, state: Év }]
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistics-graph
+                  title: Energia – havonta, 12 hónap (kWh)
+                  chart_type: bar
+                  period: month
+                  days_to_show: 365
+                  stat_types: [change]
+                  entities:
+                    - { entity: sensor.deye_termeles_osszesen, name: Termelés }
+                    - { entity: sensor.deye_fogyasztas_osszesen, name: Fogyasztás }
+                    - { entity: sensor.deye_halozati_vetel_osszesen, name: Hálózat }
+                - type: statistics-graph
+                  title: Forint – havonta, 12 hónap
+                  chart_type: bar
+                  period: month
+                  days_to_show: 365
+                  stat_types: [change]
+                  entities:
+                    - { entity: sensor.deye_megtakaritas_osszesen, name: Megtakarítás }
+                    - { entity: sensor.deye_halozati_koltseg_osszesen, name: Hálózati költség }
+                - type: statistics-graph
+                  title: Önellátás – havi átlag (%)
+                  chart_type: bar
+                  period: month
+                  days_to_show: 365
+                  stat_types: [mean]
+                  entities:
+                    - { entity: sensor.deye_onellatas_napi_zaro, name: Önellátás }
+
+      # ---------------------------------------------------------- RÉSZLETEK: Bubble Card pop-upok
+      - type: grid
+        column_span: 3
+        cards:
+        - type: heading
+          heading: Részletek (felugró panelek – a ház kártyáról nyílnak)
+          heading_style: subtitle
+          icon: mdi:gesture-tap
+        - type: vertical-stack
+          cards:
+          - type: custom:bubble-card
+            card_type: pop-up
+            hash: '#napelemek'
+            name: Napelemek
+            icon: mdi:solar-panel
+            button_type: name
+            show_header: true
+          - type: heading
+            heading: Napelemek most
+            icon: mdi:solar-power-variant
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+            - type: tile
+              entity: sensor.deye_pv_teljesitmeny
+              name: Összes PV
+              color: amber
+            - type: tile
+              entity: sensor.deye_termeles_napi
+              name: Mai termelés
+              icon: mdi:solar-power
+              color: amber
+            - type: tile
+              entity: sensor.deye_elorejelzes_ma_hatralevo
+              name: Ma még várható
+              icon: mdi:weather-sunset-down
+              color: orange
+            - type: tile
+              entity: sensor.deye_elorejelzes_holnap
+              name: Holnap várható
+              icon: mdi:weather-sunny-alert
+              color: orange
+          - type: heading
+            heading: Ház tető (4,9 kWp · 45° / D)
+            icon: mdi:solar-panel-large
+          - type: tile
+            entity: sensor.deye_string_1
+            name: Teljesítmény
+            color: amber
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+            - type: gauge
+              entity: sensor.deye_string_1_kihasznaltsag
+              name: Kihasználtság (névlegeshez)
+              min: 0
+              max: 100
+              needle: true
+              severity:
+                green: 50
+                yellow: 20
+                red: 0
+            - type: gauge
+              entity: sensor.deye_string_1_napszog
+              name: Napszög (90° = ideális)
+              min: 0
+              max: 90
+              needle: true
+              severity:
+                green: 60
+                yellow: 30
+                red: 0
+          - type: entities
+            entities:
+            - type: attribute
+              entity: sensor.deye_string_1_kihasznaltsag
+              attribute: arany_osszesbol
+              name: Arány az összes termelésből
+              suffix: '%'
+            - type: attribute
+              entity: sensor.deye_string_1_kihasznaltsag
+              attribute: vartbol
+              name: Most várthoz képest (Forecast.Solar)
+              suffix: '%'
+            - type: attribute
+              entity: sensor.deye_string_1_napszog
+              attribute: beesesi_szog
+              name: Beesési szög (a normálishoz)
+              suffix: °
+            - type: attribute
+              entity: sensor.deye_string_1
+              attribute: elorejelzes_ma
+              name: Előrejelzés ma
+              suffix: kWh
+            - type: attribute
+              entity: sensor.deye_string_1
+              attribute: elorejelzes_holnap
+              name: Előrejelzés holnap
+              suffix: kWh
+            - entity: sensor.fo_inverter_pv2_voltage
+              name: MPPT feszültség
+            - entity: sensor.fo_inverter_pv2_current
+              name: MPPT áram
+          - type: custom:apexcharts-card
+            graph_span: 24h
+            span:
+              start: day
+            header:
+              show: true
+              title: 'Ma: teljesítmény és napszög'
+              show_states: false
+            apex_config:
+              chart:
+                height: 200
+              stroke:
+                curve: smooth
+              legend:
+                position: bottom
+            yaxis:
+            - id: w
+              min: 0
+              decimals: 0
+            - id: deg
+              opposite: true
+              min: 0
+              max: 90
+              decimals: 0
+            series:
+            - entity: sensor.deye_string_1
+              name: W
+              yaxis_id: w
+              type: area
+              color: '#F59E0B'
+              opacity: 0.3
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.deye_string_1_napszog
+              name: Napszög
+              yaxis_id: deg
+              color: '#94A3B8'
+              stroke_width: 2
+              group_by:
+                func: avg
+                duration: 10min
+          - type: heading
+            heading: Garázs DK (70° / DK)
+            icon: mdi:solar-panel-large
+          - type: tile
+            entity: sensor.deye_string_2
+            name: Teljesítmény
+            color: amber
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+            - type: gauge
+              entity: sensor.deye_string_2_kihasznaltsag
+              name: Kihasználtság (névlegeshez)
+              min: 0
+              max: 100
+              needle: true
+              severity:
+                green: 50
+                yellow: 20
+                red: 0
+            - type: gauge
+              entity: sensor.deye_string_2_napszog
+              name: Napszög (90° = ideális)
+              min: 0
+              max: 90
+              needle: true
+              severity:
+                green: 60
+                yellow: 30
+                red: 0
+          - type: entities
+            entities:
+            - type: attribute
+              entity: sensor.deye_string_2_kihasznaltsag
+              attribute: arany_osszesbol
+              name: Arány az összes termelésből
+              suffix: '%'
+            - type: attribute
+              entity: sensor.deye_string_2_kihasznaltsag
+              attribute: vartbol
+              name: Most várthoz képest (Forecast.Solar)
+              suffix: '%'
+            - type: attribute
+              entity: sensor.deye_string_2_napszog
+              attribute: beesesi_szog
+              name: Beesési szög (a normálishoz)
+              suffix: °
+            - type: attribute
+              entity: sensor.deye_string_2
+              attribute: elorejelzes_ma
+              name: Előrejelzés ma
+              suffix: kWh
+            - type: attribute
+              entity: sensor.deye_string_2
+              attribute: elorejelzes_holnap
+              name: Előrejelzés holnap
+              suffix: kWh
+            - entity: sensor.inverter_2_pv1_voltage
+              name: MPPT feszültség
+            - entity: sensor.inverter_2_pv1_current
+              name: MPPT áram
+          - type: custom:apexcharts-card
+            graph_span: 24h
+            span:
+              start: day
+            header:
+              show: true
+              title: 'Ma: teljesítmény és napszög'
+              show_states: false
+            apex_config:
+              chart:
+                height: 200
+              stroke:
+                curve: smooth
+              legend:
+                position: bottom
+            yaxis:
+            - id: w
+              min: 0
+              decimals: 0
+            - id: deg
+              opposite: true
+              min: 0
+              max: 90
+              decimals: 0
+            series:
+            - entity: sensor.deye_string_2
+              name: W
+              yaxis_id: w
+              type: area
+              color: '#10B981'
+              opacity: 0.3
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.deye_string_2_napszog
+              name: Napszög
+              yaxis_id: deg
+              color: '#94A3B8'
+              stroke_width: 2
+              group_by:
+                func: avg
+                duration: 10min
+          - type: heading
+            heading: Műhely nyugat (70° / Ny)
+            icon: mdi:solar-panel-large
+          - type: tile
+            entity: sensor.deye_string_3
+            name: Teljesítmény
+            color: amber
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+            - type: gauge
+              entity: sensor.deye_string_3_kihasznaltsag
+              name: Kihasználtság (névlegeshez)
+              min: 0
+              max: 100
+              needle: true
+              severity:
+                green: 50
+                yellow: 20
+                red: 0
+            - type: gauge
+              entity: sensor.deye_string_3_napszog
+              name: Napszög (90° = ideális)
+              min: 0
+              max: 90
+              needle: true
+              severity:
+                green: 60
+                yellow: 30
+                red: 0
+          - type: entities
+            entities:
+            - type: attribute
+              entity: sensor.deye_string_3_kihasznaltsag
+              attribute: arany_osszesbol
+              name: Arány az összes termelésből
+              suffix: '%'
+            - type: attribute
+              entity: sensor.deye_string_3_kihasznaltsag
+              attribute: vartbol
+              name: Most várthoz képest (Forecast.Solar)
+              suffix: '%'
+            - type: attribute
+              entity: sensor.deye_string_3_napszog
+              attribute: beesesi_szog
+              name: Beesési szög (a normálishoz)
+              suffix: °
+            - type: attribute
+              entity: sensor.deye_string_3
+              attribute: elorejelzes_ma
+              name: Előrejelzés ma
+              suffix: kWh
+            - type: attribute
+              entity: sensor.deye_string_3
+              attribute: elorejelzes_holnap
+              name: Előrejelzés holnap
+              suffix: kWh
+            - entity: sensor.inverter_2_pv2_voltage
+              name: MPPT feszültség
+            - entity: sensor.inverter_2_pv2_current
+              name: MPPT áram
+          - type: custom:apexcharts-card
+            graph_span: 24h
+            span:
+              start: day
+            header:
+              show: true
+              title: 'Ma: teljesítmény és napszög'
+              show_states: false
+            apex_config:
+              chart:
+                height: 200
+              stroke:
+                curve: smooth
+              legend:
+                position: bottom
+            yaxis:
+            - id: w
+              min: 0
+              decimals: 0
+            - id: deg
+              opposite: true
+              min: 0
+              max: 90
+              decimals: 0
+            series:
+            - entity: sensor.deye_string_3
+              name: W
+              yaxis_id: w
+              type: area
+              color: '#8B5CF6'
+              opacity: 0.3
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.deye_string_3_napszog
+              name: Napszög
+              yaxis_id: deg
+              color: '#94A3B8'
+              stroke_width: 2
+              group_by:
+                func: avg
+                duration: 10min
+          - type: heading
+            heading: Napelem sztringek
+            icon: mdi:solar-panel-large
+          - type: markdown
+            content: |
+              | Sztring | Most | Kihaszn. | Arány | Napszög | Várthoz | Ma | Holnap |
+              |:--|--:|--:|--:|--:|--:|--:|--:|
+              {% for s in expand('group.deye_napelem_sztringek') -%}
+              {% set id = s.entity_id -%}
+              {% set k = id ~ '_kihasznaltsag' %}{% set a = id ~ '_napszog' -%}
+              {% set vt = state_attr(k, 'vartbol') -%}
+              | **{{ s.attributes.felirat }}**<br><small>{{ s.attributes.dolesszog }}° / {{ s.attributes.azimut }}° · {{ (s.attributes.csucs_w | float(0) / 1000) | round(1) }} kWp</small> | {{ s.state | int(0) }} W | {{ states(k) | int(0) }} % | {{ state_attr(k, 'arany_osszesbol') | int(0) }} % | {{ '∠ ' ~ states(a) | int(0) ~ '°' if states(a) | int(0) > 0 else '—' }} | {{ (vt | string ~ ' %') if vt is not none else '—' }} | {{ s.attributes.elorejelzes_ma }} kWh | {{ s.attributes.elorejelzes_holnap }} kWh |
+              {% endfor %}
+              | **Összesen** | **{{ states('sensor.deye_pv_teljesitmeny') }} W** | {{ (states('sensor.deye_pv_teljesitmeny') | float(0) / (state_attr('sensor.deye_pv_teljesitmeny','csucs_w') | float(1)) * 100) | round(0) | int }} % | 100 % | | | **{{ states('sensor.deye_elorejelzes_ma') }} kWh** | **{{ states('sensor.deye_elorejelzes_holnap') }} kWh** |
+
+              <small>**Kihasználtság** = a tömb névleges teljesítményéhez képest · **Arány** = az összes napelem-termelésből · **Napszög** = a napsugár és a panel felülete közti szög (90° = merőleges, ideális) · **Várthoz** = a Forecast.Solar most várt értékéhez képest (tartósan alacsony → árnyék, kosz vagy hiba)</small>
+          - type: custom:apexcharts-card
+            header:
+              show: true
+              title: Sztringek – 48 óra
+              show_states: true
+              colorize_states: true
+            graph_span: 48h
+            apex_config:
+              chart:
+                height: 260
+              stroke:
+                curve: smooth
+              legend:
+                position: bottom
+            series:
+            - entity: sensor.deye_string_1
+              name: Ház tető
+              color: '#F59E0B'
+              type: area
+              opacity: 0.25
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.deye_string_2
+              name: Garázs DK
+              color: '#10B981'
+              type: line
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.deye_string_3
+              name: Garázs DNY
+              color: '#8B5CF6'
+              type: line
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.deye_elorejelzes_most
+              name: Előrejelzés (össz)
+              color: '#9CA3AF'
+              type: line
+              stroke_dash: 4
+              group_by:
+                func: avg
+                duration: 10min
+          - type: custom:apexcharts-card
+            header:
+              show: true
+              title: Napbeesési szög ma (90° = merőleges)
+              show_states: true
+              colorize_states: true
+            graph_span: 24h
+            span:
+              start: day
+            now:
+              show: true
+            yaxis:
+            - min: 0
+              max: 90
+              decimals: 0
+            apex_config:
+              chart:
+                height: 220
+              stroke:
+                curve: smooth
+              legend:
+                position: bottom
+            series:
+            - entity: sensor.deye_string_1_napszog
+              name: Ház tető
+              color: '#F59E0B'
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.deye_string_2_napszog
+              name: Garázs DK
+              color: '#10B981'
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.deye_string_3_napszog
+              name: Műhely Ny
+              color: '#8B5CF6'
+              group_by:
+                func: avg
+                duration: 10min
+          - type: custom:apexcharts-card
+            header:
+              show: true
+              title: Kihasználtság ma (% a névlegeshez)
+              show_states: true
+              colorize_states: true
+            graph_span: 24h
+            span:
+              start: day
+            now:
+              show: true
+            yaxis:
+            - min: 0
+              max: 100
+              decimals: 0
+            apex_config:
+              chart:
+                height: 220
+              stroke:
+                curve: smooth
+              legend:
+                position: bottom
+            series:
+            - entity: sensor.deye_string_1_kihasznaltsag
+              name: Ház tető
+              color: '#F59E0B'
+              type: area
+              opacity: 0.2
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.deye_string_2_kihasznaltsag
+              name: Garázs DK
+              color: '#10B981'
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.deye_string_3_kihasznaltsag
+              name: Műhely Ny
+              color: '#8B5CF6'
+              group_by:
+                func: avg
+                duration: 10min
+          - type: heading
+            heading: Előrejelzés – 5 nap
+            icon: mdi:weather-partly-cloudy
+          - type: custom:apexcharts-card
+            header:
+              show: false
+            graph_span: 5d
+            span:
+              start: day
+            apex_config:
+              chart:
+                height: 230
+              legend:
+                show: true
+                position: bottom
+              plotOptions:
+                bar:
+                  borderRadius: 6
+                  columnWidth: 55%
+              dataLabels:
+                enabled: true
+                enabledOnSeries:
+                - 0
+              xaxis:
+                labels:
+                  format: ddd
+            yaxis:
+            - min: 0
+              decimals: 0
+              apex_config:
+                title:
+                  text: kWh
+            series:
+            - entity: sensor.deye_elorejelzes_napok
+              name: Várható termelés
+              type: column
+              color: '#F5A623'
+              data_generator: |
+                return (entity.attributes.napok || []).map(n =>
+                  [new Date(n.datum + 'T12:00:00').getTime(), n.kwh]);
+            - entity: sensor.deye_varhato_napi_fogyasztas
+              name: Várható fogyasztás
+              type: line
+              color: '#3B82F6'
+              stroke_width: 3
+              data_generator: |
+                const v = parseFloat(entity.state) || 0;
+                const t = new Date(); t.setHours(12,0,0,0);
+                return [0,1,2,3,4].map(i => [t.getTime() + i*86400000, v]);
+          - type: markdown
+            content: |
+              {% set avg = states('sensor.deye_varhato_napi_fogyasztas') | float(10) %}
+              | Nap | | Várható | Mérleg |
+              |:--|:--:|--:|--:|
+              {% for n in state_attr('sensor.deye_elorejelzes_napok','napok') or [] -%}
+              {% set m = (n.kwh - avg) | round(1) -%}
+              | **{{ n.nap }}** <small>{{ n.datum[5:] | replace('-','.') }}{{ ' *' if n.forras == 'becslés' }}</small> | {{ n.emoji }} | {{ n.kwh }} kWh | {{ '🟢 +' ~ m if m >= 0 else '🔴 ' ~ m }} |
+              {% endfor %}
+
+              <small>Átlagos napi fogyasztás: {{ avg }} kWh · * = időjárás alapú becslés</small>
+          - type: weather-forecast
+            entity: weather.forecast_home
+            forecast_type: daily
+            show_current: true
+            show_forecast: true
+        - type: vertical-stack
+          cards:
+          - type: custom:bubble-card
+            card_type: pop-up
+            hash: '#inverterek'
+            name: Inverterek
+            icon: mdi:sine-wave
+            button_type: name
+            show_header: true
+          - type: heading
+            heading: Inverterek (3-as garázs) – 2 × 6 kW párhuzamosan
+            icon: mdi:sine-wave
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+            - type: tile
+              entity: sensor.deye_fogyasztas_teljesitmeny
+              name: Összes terhelés
+              color: blue
+            - type: tile
+              entity: sensor.fo_inverter_load_power
+              name: Fő inverter terhelés
+              color: indigo
+            - type: tile
+              entity: sensor.inverter_2_load_power
+              name: Inverter 2 terhelés
+              color: indigo
+            - type: tile
+              entity: sensor.deye_fogyasztas_napi
+              name: Mai fogyasztás
+              icon: mdi:home-lightning-bolt-outline
+              color: blue
+            - type: gauge
+              entity: sensor.fo_inverter_temperature
+              name: Fő inverter hőm.
+              min: 0
+              max: 80
+              needle: true
+              severity:
+                green: 0
+                yellow: 50
+                red: 60
+            - type: gauge
+              entity: sensor.inverter_2_temperature
+              name: Inverter 2 hőm.
+              min: 0
+              max: 80
+              needle: true
+              severity:
+                green: 0
+                yellow: 50
+                red: 60
+          - type: custom:apexcharts-card
+            graph_span: 24h
+            span:
+              start: day
+            header:
+              show: true
+              title: Terhelés ma – inverterenként
+              show_states: false
+            apex_config:
+              chart:
+                height: 200
+                stacked: true
+              stroke:
+                curve: smooth
+              legend:
+                position: bottom
+            series:
+            - entity: sensor.fo_inverter_load_power
+              name: Fő
+              type: area
+              color: '#6366F1'
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.inverter_2_load_power
+              name: Inverter 2
+              type: area
+              color: '#38BDF8'
+              group_by:
+                func: avg
+                duration: 10min
+          - type: heading
+            heading: Rendszerállapot
+            icon: mdi:heart-pulse
+          - type: markdown
+            content: |
+              {% set inv = [('Fő inverter','fo_inverter'),('Inverter 2','inverter_2')] %}
+              | | Állapot | Riasztás | Hiba | Akku riasztás | Hőm. | PV | Terhelés |
+              |:--|:--:|:--:|:--:|:--:|--:|--:|--:|
+              {% for n,i in inv -%}
+              {% set ok = ['OK'] -%}
+              | **{{ n }}** | {{ states('sensor.'~i~'_device_state') }} | {{ '✅' if states('sensor.'~i~'_device_alarm') in ok else '⚠️ '~states('sensor.'~i~'_device_alarm') }} | {{ '✅' if states('sensor.'~i~'_device_fault') in ok else '🚨 '~states('sensor.'~i~'_device_fault') }} | {{ '✅' if states('sensor.'~i~'_battery_alarm') in ok else '⚠️' }} | {{ states('sensor.'~i~'_temperature') }} °C | {{ states('sensor.'~i~'_pv_power') }} W | {{ states('sensor.'~i~'_load_power') }} W |
+              {% endfor %}
+          - type: heading
+            heading: Fő inverter
+            icon: mdi:alpha-m-box
+          - type: entities
+            state_color: true
+            entities:
+            - entity: sensor.fo_inverter_device_state
+              name: Állapot
+            - entity: sensor.fo_inverter_pv1_power
+              name: PV1 teljesítmény
+            - entity: sensor.fo_inverter_pv1_voltage
+              name: PV1 feszültség
+            - entity: sensor.fo_inverter_pv1_current
+              name: PV1 áram
+            - entity: sensor.fo_inverter_pv2_power
+              name: PV2 teljesítmény
+            - entity: sensor.fo_inverter_pv2_voltage
+              name: PV2 feszültség
+            - entity: sensor.fo_inverter_pv2_current
+              name: PV2 áram
+            - type: divider
+            - entity: sensor.fo_inverter_load_power
+              name: Terhelés
+            - entity: sensor.fo_inverter_battery_power
+              name: Akku teljesítmény
+            - entity: sensor.fo_inverter_battery_current
+              name: Akku áram
+            - entity: sensor.fo_inverter_grid_power
+              name: Hálózat
+            - entity: sensor.fo_inverter_temperature
+              name: Hőmérséklet
+            - entity: sensor.fo_inverter_dc_temperature
+              name: DC hőmérséklet
+            - type: divider
+            - entity: sensor.fo_inverter_today_production
+              name: Mai termelés
+            - entity: sensor.fo_inverter_today_load_consumption
+              name: Mai fogyasztás
+          - type: heading
+            heading: Inverter 2
+            icon: mdi:alpha-s-box
+          - type: entities
+            state_color: true
+            entities:
+            - entity: sensor.inverter_2_device_state
+              name: Állapot
+            - entity: sensor.inverter_2_pv1_power
+              name: PV1 teljesítmény
+            - entity: sensor.inverter_2_pv1_voltage
+              name: PV1 feszültség
+            - entity: sensor.inverter_2_pv1_current
+              name: PV1 áram
+            - entity: sensor.inverter_2_pv2_power
+              name: PV2 teljesítmény
+            - entity: sensor.inverter_2_pv2_voltage
+              name: PV2 feszültség
+            - entity: sensor.inverter_2_pv2_current
+              name: PV2 áram
+            - type: divider
+            - entity: sensor.inverter_2_load_power
+              name: Terhelés
+            - entity: sensor.inverter_2_battery_power
+              name: Akku teljesítmény
+            - entity: sensor.inverter_2_battery_current
+              name: Akku áram
+            - entity: sensor.inverter_2_grid_power
+              name: Hálózat
+            - entity: sensor.inverter_2_temperature
+              name: Hőmérséklet
+            - entity: sensor.inverter_2_dc_temperature
+              name: DC hőmérséklet
+            - type: divider
+            - entity: sensor.inverter_2_today_production
+              name: Mai termelés
+            - entity: sensor.inverter_2_today_load_consumption
+              name: Mai fogyasztás
+          - type: heading
+            heading: Hőmérsékletek
+            icon: mdi:thermometer
+          - type: custom:apexcharts-card
+            header:
+              show: true
+              title: Inverter és akku – 48 óra
+              show_states: true
+              colorize_states: true
+            graph_span: 48h
+            apex_config:
+              chart:
+                height: 260
+              stroke:
+                curve: smooth
+              legend:
+                position: bottom
+              annotations:
+                yaxis:
+                - y: 55
+                  borderColor: '#EF4444'
+                  label:
+                    text: Hűtés BE 55°C
+                - y: 45
+                  borderColor: '#3B82F6'
+                  label:
+                    text: Hűtés KI 45°C
+            series:
+            - entity: sensor.fo_inverter_temperature
+              name: Fő inverter
+              color: '#EF4444'
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.inverter_2_temperature
+              name: Inverter 2
+              color: '#F97316'
+              group_by:
+                func: avg
+                duration: 10min
+            - entity: sensor.fo_inverter_battery_temperature
+              name: Akku
+              color: '#22C55E'
+              group_by:
+                func: avg
+                duration: 10min
+          - type: heading
+            heading: Munkamód
+            icon: mdi:cog-transfer
+          - type: entities
+            entities:
+            - entity: select.fo_inverter_work_mode
+              name: Work mode
+            - entity: select.fo_inverter_energy_pattern
+              name: Energy pattern
+            - entity: number.fo_inverter_zero_export_power
+              name: Zero export teljesítmény
+            - entity: select.fo_inverter_time_of_use
+              name: Time of Use
+            - entity: select.fo_inverter_io_mode
+              name: IO mód
+            - entity: switch.fo_inverter_smartload
+              name: SmartLoad
+            - entity: number.fo_inverter_smartload_on
+              name: SmartLoad BE (SOC)
+            - entity: number.fo_inverter_smartload_off
+              name: SmartLoad KI (SOC)
+          - type: heading
+            heading: Diagnosztika
+            icon: mdi:stethoscope
+          - type: entities
+            state_color: true
+            entities:
+            - entity: binary_sensor.fo_inverter_connection
+              name: Fő inverter kapcsolat
+            - entity: sensor.fo_inverter_update_interval
+              name: Fő inv. frissítés
+            - entity: binary_sensor.inverter_2_connection
+              name: Inverter 2 kapcsolat
+            - entity: sensor.inverter_2_update_interval
+              name: Inv. 2 frissítés
+            - entity: switch.fo_inverter_access_point
+              name: Access point
+            - entity: select.fo_inverter_cloud
+              name: Cloud
+          - type: button
+            name: Fő inverter újraindítása
+            icon: mdi:restart-alert
+            show_state: false
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.fo_inverter_restart
+              confirmation:
+                text: Biztosan újraindítod a FŐ invertert? Rövid kimaradás lehet!
+          - type: button
+            name: Inverter 2 újraindítása
+            icon: mdi:restart-alert
+            show_state: false
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.inverter_2_restart
+              confirmation:
+                text: Biztosan újraindítod az Inverter 2-t?
+          - type: heading
+            heading: Energiafolyam (klasszikus)
+            icon: mdi:transit-connection-variant
+          - type: custom:sunsynk-power-flow-card
+            cardstyle: full
+            large_font: true
+            show_solar: true
+            show_battery: true
+            show_grid: true
+            decimal_places: 1
+            inverter:
+              model: deye
+              modern: true
+              autarky: energy
+              three_phase: false
+            battery:
+              energy: 15360
+              shutdown_soc: 5
+              show_daily: true
+            solar:
+              mppts: 3
+              show_daily: true
+              max_power: 8900
+              pv1_name: Ház tető
+              pv2_name: Garázs DK
+              pv3_name: Garázs DNY
+            load:
+              show_daily: true
+            grid:
+              show_daily_buy: true
+              show_daily_sell: false
+            entities:
+              inverter_status_59: sensor.fo_inverter_device_state
+              day_battery_charge_70: sensor.deye_akku_toltes_napi
+              day_battery_discharge_71: sensor.deye_akku_merites_napi
+              day_load_energy_84: sensor.deye_fogyasztas_napi
+              day_grid_import_76: sensor.deye_vetel_napi
+              day_pv_energy_108: sensor.deye_termeles_napi
+              inverter_power_175: sensor.deye_fogyasztas_teljesitmeny
+              essential_power: sensor.deye_fogyasztas_teljesitmeny
+              grid_connected_status_194: binary_sensor.fo_inverter_grid
+              grid_ct_power_172: sensor.deye_halozat_teljesitmeny
+              battery_voltage_183: sensor.fo_inverter_battery_voltage
+              battery_soc_184: sensor.deye_akku_soc
+              battery_power_190: sensor.deye_akku_teljesitmeny
+              battery_current_191: sensor.deye_akku_aram
+              battery_temp_182: sensor.fo_inverter_battery_temperature
+              radiator_temp_91: sensor.fo_inverter_temperature
+              pv1_power_186: sensor.deye_string_1
+              pv2_power_187: sensor.deye_string_2
+              pv3_power_188: sensor.deye_string_3
+              pv_total: sensor.deye_pv_teljesitmeny
+              remaining_solar: sensor.deye_elorejelzes_ma_hatralevo
+        - type: vertical-stack
+          cards:
+          - type: custom:bubble-card
+            card_type: pop-up
+            hash: '#akkumulator'
+            name: Akkumulátor
+            icon: mdi:battery-high
+            button_type: name
+            show_header: true
+          - type: heading
+            heading: Akkumulátor most (15 kWh, 3-as garázs)
+            icon: mdi:battery-high
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+            - type: gauge
+              entity: sensor.deye_akku_soc
+              name: Töltöttség
+              needle: true
+              severity:
+                green: 50
+                yellow: 20
+                red: 0
+            - type: tile
+              entity: sensor.deye_akku_teljesitmeny
+              name: Teljesítmény (+merül / −tölt)
+              color: green
+            - type: tile
+              entity: sensor.deye_akku_hatralevo_ido
+              name: Hátralévő idő
+              icon: mdi:timer-sand
+              color: green
+            - type: tile
+              entity: sensor.deye_akku_hasznos_energia
+              name: Hasznos energia (tartalék felett)
+              color: green
+            - type: tile
+              entity: sensor.deye_akku_toltes_napi
+              name: Ma töltve
+              icon: mdi:battery-plus
+              color: teal
+            - type: tile
+              entity: sensor.deye_akku_merites_napi
+              name: Ma merítve
+              icon: mdi:battery-minus
+              color: teal
+            - type: tile
+              entity: sensor.fo_inverter_battery_temperature
+              name: Hőmérséklet
+              color: teal
+          - type: custom:apexcharts-card
+            graph_span: 48h
+            header:
+              show: true
+              title: Töltöttség és teljesítmény – 48 óra
+              show_states: true
+              colorize_states: true
+            apex_config:
+              chart:
+                height: 240
+              stroke:
+                curve: smooth
+              legend:
+                position: bottom
+            yaxis:
+            - id: soc
+              min: 0
+              max: 100
+              decimals: 0
+            - id: w
+              opposite: true
+              decimals: 0
+            series:
+            - entity: sensor.deye_akku_soc
+              name: SOC %
+              yaxis_id: soc
+              type: area
+              color: '#22C55E'
+              opacity: 0.25
+              group_by:
+                func: last
+                duration: 10min
+            - entity: sensor.deye_akku_teljesitmeny
+              name: W (+merül)
+              yaxis_id: w
+              color: '#F59E0B'
+              group_by:
+                func: avg
+                duration: 10min
+          - type: heading
+            heading: Akkumulátor (15 kWh)
+            icon: mdi:battery-high
+          - type: gauge
+            entity: sensor.deye_akku_soc
+            name: Töltöttség
+            needle: true
+            severity:
+              green: 50
+              yellow: 20
+              red: 0
+          - type: entities
+            state_color: true
+            entities:
+            - entity: sensor.deye_akku_soc
+              name: SOC
+              secondary_info: last-changed
+            - entity: sensor.deye_akku_hasznos_energia
+              name: Hasznos energia (tartalék felett)
+            - entity: sensor.deye_akku_hatralevo_ido
+              name: Hátralévő idő
+            - entity: sensor.fo_inverter_battery_voltage
+              name: Feszültség
+            - entity: sensor.deye_akku_aram
+              name: Áram (össz)
+            - entity: sensor.deye_akku_teljesitmeny
+              name: Teljesítmény (össz)
+            - entity: sensor.fo_inverter_battery_temperature
+              name: Hőmérséklet
+            - entity: sensor.fo_inverter_battery_state
+              name: Állapot
+            - entity: sensor.fo_inverter_battery_capacity
+              name: BMS kapacitás
+            - entity: sensor.fo_inverter_battery_alarm
+              name: Riasztás
+            - entity: sensor.fo_inverter_battery_fault
+              name: Hiba
+            - type: divider
+            - entity: sensor.deye_akku_toltes_osszesen
+              name: Össz. töltés
+            - entity: sensor.deye_akku_merites_osszesen
+              name: Össz. merítés
+          - type: heading
+            heading: Akku beállítások (Fő inverter)
+            icon: mdi:battery-sync
+          - type: entities
+            entities:
+            - entity: number.fo_inverter_battery_max_charging_current
+              name: Max töltőáram
+            - entity: number.fo_inverter_battery_max_discharging_current
+              name: Max merítőáram
+            - entity: number.fo_inverter_battery_shutdown_soc
+              name: Lekapcsolási SOC
+            - entity: number.fo_inverter_battery_restart_soc
+              name: Újraindítási SOC
+            - entity: number.fo_inverter_battery_low_soc
+              name: Alacsony SOC
+            - type: divider
+            - entity: switch.fo_inverter_battery_grid_charging
+              name: Hálózati töltés
+            - entity: number.fo_inverter_battery_grid_charging_current
+              name: Hálózati töltőáram
+            - entity: number.fo_inverter_battery_grid_charging_start
+              name: Hálózati töltés indul (SOC)
+            - type: divider
+            - entity: number.fo_inverter_battery_absorption
+              name: Abszorpció
+            - entity: number.fo_inverter_battery_float
+              name: Float
+            - entity: number.fo_inverter_battery_equalization
+              name: Kiegyenlítés
+          - type: heading
+            heading: Életciklus összesítők
+            icon: mdi:counter
+          - type: entities
+            entities:
+            - entity: sensor.deye_termeles_osszesen
+              name: Termelés
+            - entity: sensor.deye_fogyasztas_osszesen
+              name: Fogyasztás
+            - entity: sensor.deye_halozati_vetel_osszesen
+              name: Hálózati vétel
+            - entity: sensor.deye_akku_toltes_osszesen
+              name: Akku töltés
+            - entity: sensor.deye_akku_merites_osszesen
+              name: Akku merítés
+            - type: divider
+            - entity: sensor.deye_megtakaritas_osszesen
+              name: Megtakarítás összesen
+            - entity: sensor.deye_halozati_koltseg_osszesen
+              name: Hálózati költség összesen
+          - type: markdown
+            content: |
+              {% set c = states('sensor.deye_akku_merites_osszesen') | float(0) %}
+              {% set cap = states('input_number.deye_akku_kapacitas') | float(15) %}
+              **Akku ciklusok (becslés):** {{ (c / cap) | round(0) | int }}
+              **Akku hatásfok:** {{ (c / (states('sensor.deye_akku_toltes_osszesen') | float(1)) * 100) | round(1) }} %
+        - type: vertical-stack
+          cards:
+          - type: custom:bubble-card
+            card_type: pop-up
+            hash: '#halozat'
+            name: Hálózat
+            icon: mdi:transmission-tower
+            button_type: name
+            show_header: true
+          - type: heading
+            heading: Hálózat (E.ON tartalék)
+            icon: mdi:transmission-tower
+          - type: grid
+            columns: 2
+            square: false
+            cards:
+            - type: tile
+              entity: binary_sensor.fo_inverter_grid
+              name: Hálózat jelen
+            - type: tile
+              entity: sensor.deye_halozat_teljesitmeny
+              name: Teljesítmény
+              color: red
+            - type: tile
+              entity: sensor.fo_inverter_grid_l1_voltage
+              name: Feszültség
+              color: red
+            - type: tile
+              entity: sensor.fo_inverter_grid_frequency
+              name: Frekvencia
+              color: red
+            - type: tile
+              entity: sensor.deye_vetel_napi
+              name: Ma vásárolt
+              icon: mdi:transmission-tower-import
+              color: red
+            - type: tile
+              entity: sensor.deye_vetel_havi
+              name: E havi vétel
+              icon: mdi:transmission-tower-import
+              color: red
+            - type: tile
+              entity: sensor.deye_koltseg_napi
+              name: Mai költség
+              icon: mdi:cash-minus
+              color: orange
+            - type: tile
+              entity: sensor.deye_koltseg_havi
+              name: E havi költség
+              icon: mdi:cash-minus
+              color: orange
+          - type: statistics-graph
+            title: Hálózati vétel – 30 nap (kWh)
+            chart_type: bar
+            period: day
+            days_to_show: 30
+            stat_types:
+            - change
+            entities:
+            - entity: sensor.deye_halozati_vetel_osszesen
+              name: Vétel
+          - type: custom:apexcharts-card
+            graph_span: 7d
+            header:
+              show: true
+              title: Hálózati teljesítmény és jelenlét – 7 nap
+              show_states: false
+            apex_config:
+              chart:
+                height: 200
+              legend:
+                position: bottom
+            series:
+            - entity: sensor.deye_halozat_teljesitmeny
+              name: W
+              type: area
+              color: '#E5484D'
+              opacity: 0.3
+              group_by:
+                func: avg
+                duration: 15min
+          - type: heading
+            heading: Hálózat (E.ON / tartalék)
+            icon: mdi:transmission-tower
+          - type: entities
+            state_color: true
+            entities:
+            - entity: binary_sensor.fo_inverter_grid
+              name: Hálózat jelen
+            - entity: sensor.fo_inverter_grid_power
+              name: Teljesítmény
+            - entity: sensor.fo_inverter_grid_l1_voltage
+              name: Feszültség
+            - entity: sensor.fo_inverter_grid_l1_current
+              name: Áram
+            - entity: sensor.fo_inverter_grid_frequency
+              name: Frekvencia
+            - type: divider
+            - entity: switch.fo_inverter_off_grid
+              name: Off-grid mód
+            - entity: switch.fo_inverter_grid_peak_shaving
+              name: Peak shaving
+            - entity: number.fo_inverter_grid_peak_shaving
+              name: Peak shaving határ
+            - entity: number.fo_inverter_grid_voltage_protection_high
+              name: Feszültségvédelem felső
+            - entity: number.fo_inverter_grid_voltage_protection_low
+              name: Feszültségvédelem alsó
+            - entity: number.fo_inverter_grid_reconnection_time
+              name: Visszakapcsolási idő
+
+  # ===========================================================================
+  #  2. SZERVIZ – professzionális, teljes oldalas nézet
+  # ===========================================================================
+  - title: Szerviz
+    path: szerviz
+    icon: mdi:tools
+    theme: deye_sotet
+    type: sections
+    max_columns: 4
+    sections:
+      # ---------------------------------------------------------- RENDSZERÁLLAPOT
+      - type: grid
+        column_span: 4
+        cards:
+          - type: heading
+            heading: Rendszerállapot
+            icon: mdi:heart-pulse
+          - type: markdown
+            grid_options: { columns: full }
+            content: |
+              {% set inv = [('Fő inverter','fo_inverter'),('Inverter 2','inverter_2')] %}
+              | | Állapot | Riasztás | Hiba | Akku riasztás | Hőm. | PV | Terhelés |
+              |:--|:--:|:--:|:--:|:--:|--:|--:|--:|
+              {% for n,i in inv -%}
+              {% set ok = ['OK'] -%}
+              | **{{ n }}** | {{ states('sensor.'~i~'_device_state') }} | {{ '✅' if states('sensor.'~i~'_device_alarm') in ok else '⚠️ '~states('sensor.'~i~'_device_alarm') }} | {{ '✅' if states('sensor.'~i~'_device_fault') in ok else '🚨 '~states('sensor.'~i~'_device_fault') }} | {{ '✅' if states('sensor.'~i~'_battery_alarm') in ok else '⚠️' }} | {{ states('sensor.'~i~'_temperature') }} °C | {{ states('sensor.'~i~'_pv_power') }} W | {{ states('sensor.'~i~'_load_power') }} W |
+              {% endfor %}
+          - type: tile
+            entity: sensor.deye_pv_teljesitmeny
+            name: PV össz
+            color: amber
+            grid_options: { columns: 3 }
+          - type: tile
+            entity: sensor.deye_fogyasztas_teljesitmeny
+            name: Terhelés össz
+            color: blue
+            grid_options: { columns: 3 }
+          - type: tile
+            entity: sensor.deye_akku_teljesitmeny
+            name: Akku (+merül/−tölt)
+            color: green
+            grid_options: { columns: 3 }
+          - type: tile
+            entity: sensor.deye_halozat_teljesitmeny
+            name: Hálózat
+            color: red
+            grid_options: { columns: 3 }
+
+      # ---------------------------------------------------------- ENERGIAFOLYAM
+      - type: grid
+        cards:
+          - type: heading
+            heading: Energiafolyam (klasszikus)
+            icon: mdi:transit-connection-variant
+          - type: custom:sunsynk-power-flow-card
+            grid_options: { columns: full }
+            cardstyle: full
+            large_font: true
+            show_solar: true
+            show_battery: true
+            show_grid: true
+            decimal_places: 1
+            inverter:
+              model: deye
+              modern: true
+              autarky: energy
+              three_phase: false
+            battery:
+              energy: 15360
+              shutdown_soc: 5
+              show_daily: true
+            solar:
+              mppts: 3
+              show_daily: true
+              max_power: 8900
+              pv1_name: Ház tető
+              pv2_name: Garázs DK
+              pv3_name: Garázs DNY
+            load:
+              show_daily: true
+            grid:
+              show_daily_buy: true
+              show_daily_sell: false
+            entities:
+              inverter_status_59: sensor.fo_inverter_device_state
+              day_battery_charge_70: sensor.deye_akku_toltes_napi
+              day_battery_discharge_71: sensor.deye_akku_merites_napi
+              day_load_energy_84: sensor.deye_fogyasztas_napi
+              day_grid_import_76: sensor.deye_vetel_napi
+              day_pv_energy_108: sensor.deye_termeles_napi
+              inverter_power_175: sensor.deye_fogyasztas_teljesitmeny
+              essential_power: sensor.deye_fogyasztas_teljesitmeny
+              grid_connected_status_194: binary_sensor.fo_inverter_grid
+              grid_ct_power_172: sensor.deye_halozat_teljesitmeny
+              battery_voltage_183: sensor.fo_inverter_battery_voltage
+              battery_soc_184: sensor.deye_akku_soc
+              battery_power_190: sensor.deye_akku_teljesitmeny
+              battery_current_191: sensor.deye_akku_aram
+              battery_temp_182: sensor.fo_inverter_battery_temperature
+              radiator_temp_91: sensor.fo_inverter_temperature
+              pv1_power_186: sensor.deye_string_1
+              pv2_power_187: sensor.deye_string_2
+              pv3_power_188: sensor.deye_string_3
+              pv_total: sensor.deye_pv_teljesitmeny
+              remaining_solar: sensor.deye_elorejelzes_ma_hatralevo
+
+      # ---------------------------------------------------------- FŐ INVERTER
+      - type: grid
+        cards:
+          - type: heading
+            heading: Fő inverter
+            icon: mdi:alpha-m-box
+          - type: entities
+            state_color: true
+            entities:
+              - { entity: sensor.fo_inverter_device_state, name: Állapot }
+              - { entity: sensor.fo_inverter_pv1_power, name: PV1 teljesítmény }
+              - { entity: sensor.fo_inverter_pv1_voltage, name: PV1 feszültség }
+              - { entity: sensor.fo_inverter_pv1_current, name: PV1 áram }
+              - { entity: sensor.fo_inverter_pv2_power, name: PV2 teljesítmény }
+              - { entity: sensor.fo_inverter_pv2_voltage, name: PV2 feszültség }
+              - { entity: sensor.fo_inverter_pv2_current, name: PV2 áram }
+              - type: divider
+              - { entity: sensor.fo_inverter_load_power, name: Terhelés }
+              - { entity: sensor.fo_inverter_battery_power, name: Akku teljesítmény }
+              - { entity: sensor.fo_inverter_battery_current, name: Akku áram }
+              - { entity: sensor.fo_inverter_grid_power, name: Hálózat }
+              - { entity: sensor.fo_inverter_temperature, name: Hőmérséklet }
+              - { entity: sensor.fo_inverter_dc_temperature, name: DC hőmérséklet }
+              - type: divider
+              - { entity: sensor.fo_inverter_today_production, name: Mai termelés }
+              - { entity: sensor.fo_inverter_today_load_consumption, name: Mai fogyasztás }
+
+      # ---------------------------------------------------------- INVERTER 2
+      - type: grid
+        cards:
+          - type: heading
+            heading: Inverter 2
+            icon: mdi:alpha-s-box
+          - type: entities
+            state_color: true
+            entities:
+              - { entity: sensor.inverter_2_device_state, name: Állapot }
+              - { entity: sensor.inverter_2_pv1_power, name: PV1 teljesítmény }
+              - { entity: sensor.inverter_2_pv1_voltage, name: PV1 feszültség }
+              - { entity: sensor.inverter_2_pv1_current, name: PV1 áram }
+              - { entity: sensor.inverter_2_pv2_power, name: PV2 teljesítmény }
+              - { entity: sensor.inverter_2_pv2_voltage, name: PV2 feszültség }
+              - { entity: sensor.inverter_2_pv2_current, name: PV2 áram }
+              - type: divider
+              - { entity: sensor.inverter_2_load_power, name: Terhelés }
+              - { entity: sensor.inverter_2_battery_power, name: Akku teljesítmény }
+              - { entity: sensor.inverter_2_battery_current, name: Akku áram }
+              - { entity: sensor.inverter_2_grid_power, name: Hálózat }
+              - { entity: sensor.inverter_2_temperature, name: Hőmérséklet }
+              - { entity: sensor.inverter_2_dc_temperature, name: DC hőmérséklet }
+              - type: divider
+              - { entity: sensor.inverter_2_today_production, name: Mai termelés }
+              - { entity: sensor.inverter_2_today_load_consumption, name: Mai fogyasztás }
+
+      # ---------------------------------------------------------- AKKUMULÁTOR
+      - type: grid
+        cards:
+          - type: heading
+            heading: Akkumulátor (15 kWh)
+            icon: mdi:battery-high
+          - type: gauge
+            entity: sensor.deye_akku_soc
+            name: Töltöttség
+            needle: true
+            severity: { green: 50, yellow: 20, red: 0 }
+          - type: entities
+            state_color: true
+            entities:
+              - { entity: sensor.deye_akku_soc, name: SOC, secondary_info: last-changed }
+              - { entity: sensor.deye_akku_hasznos_energia, name: Hasznos energia (tartalék felett) }
+              - { entity: sensor.deye_akku_hatralevo_ido, name: Hátralévő idő }
+              - { entity: sensor.fo_inverter_battery_voltage, name: Feszültség }
+              - { entity: sensor.deye_akku_aram, name: Áram (össz) }
+              - { entity: sensor.deye_akku_teljesitmeny, name: Teljesítmény (össz) }
+              - { entity: sensor.fo_inverter_battery_temperature, name: Hőmérséklet }
+              - { entity: sensor.fo_inverter_battery_state, name: Állapot }
+              - { entity: sensor.fo_inverter_battery_capacity, name: BMS kapacitás }
+              - { entity: sensor.fo_inverter_battery_alarm, name: Riasztás }
+              - { entity: sensor.fo_inverter_battery_fault, name: Hiba }
+              - type: divider
+              - { entity: sensor.deye_akku_toltes_osszesen, name: Össz. töltés }
+              - { entity: sensor.deye_akku_merites_osszesen, name: Össz. merítés }
+
+      # ---------------------------------------------------------- AKKU BEÁLLÍTÁSOK
+      - type: grid
+        cards:
+          - type: heading
+            heading: Akku beállítások (Fő inverter)
+            icon: mdi:battery-sync
+          - type: entities
+            entities:
+              - { entity: number.fo_inverter_battery_max_charging_current, name: Max töltőáram }
+              - { entity: number.fo_inverter_battery_max_discharging_current, name: Max merítőáram }
+              - { entity: number.fo_inverter_battery_shutdown_soc, name: Lekapcsolási SOC }
+              - { entity: number.fo_inverter_battery_restart_soc, name: Újraindítási SOC }
+              - { entity: number.fo_inverter_battery_low_soc, name: Alacsony SOC }
+              - type: divider
+              - { entity: switch.fo_inverter_battery_grid_charging, name: Hálózati töltés }
+              - { entity: number.fo_inverter_battery_grid_charging_current, name: Hálózati töltőáram }
+              - { entity: number.fo_inverter_battery_grid_charging_start, name: Hálózati töltés indul (SOC) }
+              - type: divider
+              - { entity: number.fo_inverter_battery_absorption, name: Abszorpció }
+              - { entity: number.fo_inverter_battery_float, name: Float }
+              - { entity: number.fo_inverter_battery_equalization, name: Kiegyenlítés }
+
+      # ---------------------------------------------------------- SZTRINGEK
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Napelem sztringek
+            icon: mdi:solar-panel-large
+          - type: markdown
+            grid_options: { columns: full }
+            content: |
+              | Sztring | Most | Kihaszn. | Arány | Napszög | Várthoz | Ma | Holnap |
+              |:--|--:|--:|--:|--:|--:|--:|--:|
+              {% for s in expand('group.deye_napelem_sztringek') -%}
+              {% set id = s.entity_id -%}
+              {% set k = id ~ '_kihasznaltsag' %}{% set a = id ~ '_napszog' -%}
+              {% set vt = state_attr(k, 'vartbol') -%}
+              | **{{ s.attributes.felirat }}**<br><small>{{ s.attributes.dolesszog }}° / {{ s.attributes.azimut }}° · {{ (s.attributes.csucs_w | float(0) / 1000) | round(1) }} kWp</small> | {{ s.state | int(0) }} W | {{ states(k) | int(0) }} % | {{ state_attr(k, 'arany_osszesbol') | int(0) }} % | {{ '∠ ' ~ states(a) | int(0) ~ '°' if states(a) | int(0) > 0 else '—' }} | {{ (vt | string ~ ' %') if vt is not none else '—' }} | {{ s.attributes.elorejelzes_ma }} kWh | {{ s.attributes.elorejelzes_holnap }} kWh |
+              {% endfor %}
+              | **Összesen** | **{{ states('sensor.deye_pv_teljesitmeny') }} W** | {{ (states('sensor.deye_pv_teljesitmeny') | float(0) / (state_attr('sensor.deye_pv_teljesitmeny','csucs_w') | float(1)) * 100) | round(0) | int }} % | 100 % | | | **{{ states('sensor.deye_elorejelzes_ma') }} kWh** | **{{ states('sensor.deye_elorejelzes_holnap') }} kWh** |
+
+              <small>**Kihasználtság** = a tömb névleges teljesítményéhez képest · **Arány** = az összes napelem-termelésből · **Napszög** = a napsugár és a panel felülete közti szög (90° = merőleges, ideális) · **Várthoz** = a Forecast.Solar most várt értékéhez képest (tartósan alacsony → árnyék, kosz vagy hiba)</small>
+          - type: custom:apexcharts-card
+            grid_options: { columns: full }
+            header: { show: true, title: Sztringek – 48 óra, show_states: true, colorize_states: true }
+            graph_span: 48h
+            apex_config:
+              chart: { height: 260 }
+              stroke: { curve: smooth }
+              legend: { position: bottom }
+            series:
+              - { entity: sensor.deye_string_1, name: Ház tető, color: "#F59E0B", type: area, opacity: 0.25, group_by: { func: avg, duration: 10min } }
+              - { entity: sensor.deye_string_2, name: Garázs DK, color: "#10B981", type: line, group_by: { func: avg, duration: 10min } }
+              - { entity: sensor.deye_string_3, name: Garázs DNY, color: "#8B5CF6", type: line, group_by: { func: avg, duration: 10min } }
+              - { entity: sensor.deye_elorejelzes_most, name: Előrejelzés (össz), color: "#9CA3AF", type: line, stroke_dash: 4, group_by: { func: avg, duration: 10min } }
+          - type: custom:apexcharts-card
+            grid_options: { columns: full }
+            header: { show: true, title: Napbeesési szög ma (90° = merőleges), show_states: true, colorize_states: true }
+            graph_span: 24h
+            span: { start: day }
+            now: { show: true }
+            yaxis: [ { min: 0, max: 90, decimals: 0 } ]
+            apex_config: { chart: { height: 220 }, stroke: { curve: smooth }, legend: { position: bottom } }
+            series:
+              - { entity: sensor.deye_string_1_napszog, name: Ház tető, color: "#F59E0B", group_by: { func: avg, duration: 10min } }
+              - { entity: sensor.deye_string_2_napszog, name: Garázs DK, color: "#10B981", group_by: { func: avg, duration: 10min } }
+              - { entity: sensor.deye_string_3_napszog, name: Műhely Ny, color: "#8B5CF6", group_by: { func: avg, duration: 10min } }
+          - type: custom:apexcharts-card
+            grid_options: { columns: full }
+            header: { show: true, title: Kihasználtság ma (% a névlegeshez), show_states: true, colorize_states: true }
+            graph_span: 24h
+            span: { start: day }
+            now: { show: true }
+            yaxis: [ { min: 0, max: 100, decimals: 0 } ]
+            apex_config: { chart: { height: 220 }, stroke: { curve: smooth }, legend: { position: bottom } }
+            series:
+              - { entity: sensor.deye_string_1_kihasznaltsag, name: Ház tető, color: "#F59E0B", type: area, opacity: 0.2, group_by: { func: avg, duration: 10min } }
+              - { entity: sensor.deye_string_2_kihasznaltsag, name: Garázs DK, color: "#10B981", group_by: { func: avg, duration: 10min } }
+              - { entity: sensor.deye_string_3_kihasznaltsag, name: Műhely Ny, color: "#8B5CF6", group_by: { func: avg, duration: 10min } }
+
+      # ---------------------------------------------------------- HŐMÉRSÉKLETEK
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Hőmérsékletek
+            icon: mdi:thermometer
+          - type: custom:apexcharts-card
+            grid_options: { columns: full }
+            header: { show: true, title: Inverter és akku – 48 óra, show_states: true, colorize_states: true }
+            graph_span: 48h
+            apex_config:
+              chart: { height: 260 }
+              stroke: { curve: smooth }
+              legend: { position: bottom }
+              annotations:
+                yaxis:
+                  - { y: 55, borderColor: "#EF4444", label: { text: Hűtés BE 55°C } }
+                  - { y: 45, borderColor: "#3B82F6", label: { text: Hűtés KI 45°C } }
+            series:
+              - { entity: sensor.fo_inverter_temperature, name: Fő inverter, color: "#EF4444", group_by: { func: avg, duration: 10min } }
+              - { entity: sensor.inverter_2_temperature, name: Inverter 2, color: "#F97316", group_by: { func: avg, duration: 10min } }
+              - { entity: sensor.fo_inverter_battery_temperature, name: Akku, color: "#22C55E", group_by: { func: avg, duration: 10min } }
+
+      # ---------------------------------------------------------- TELJESÍTMÉNY 7 NAP
+      - type: grid
+        column_span: 4
+        cards:
+          - type: heading
+            heading: Teljesítmény – 7 nap
+            icon: mdi:chart-areaspline
+          - type: custom:apexcharts-card
+            grid_options: { columns: full }
+            header: { show: false }
+            graph_span: 7d
+            apex_config:
+              chart: { height: 300 }
+              stroke: { curve: smooth }
+              legend: { position: bottom }
+            yaxis:
+              - { id: w, decimals: 0 }
+              - { id: soc, opposite: true, min: 0, max: 100, decimals: 0 }
+            series:
+              - { entity: sensor.deye_pv_teljesitmeny, name: PV, yaxis_id: w, color: "#F5A623", type: area, opacity: 0.3, group_by: { func: avg, duration: 15min } }
+              - { entity: sensor.deye_fogyasztas_teljesitmeny, name: Terhelés, yaxis_id: w, color: "#3B82F6", group_by: { func: avg, duration: 15min } }
+              - { entity: sensor.deye_halozat_teljesitmeny, name: Hálózat, yaxis_id: w, color: "#EF4444", group_by: { func: avg, duration: 15min } }
+              - { entity: sensor.deye_akku_soc, name: Akku %, yaxis_id: soc, color: "#22C55E", group_by: { func: last, duration: 15min } }
+
+      # ---------------------------------------------------------- HÁLÓZAT
+      - type: grid
+        cards:
+          - type: heading
+            heading: Hálózat (E.ON / tartalék)
+            icon: mdi:transmission-tower
+          - type: entities
+            state_color: true
+            entities:
+              - { entity: binary_sensor.fo_inverter_grid, name: Hálózat jelen }
+              - { entity: sensor.fo_inverter_grid_power, name: Teljesítmény }
+              - { entity: sensor.fo_inverter_grid_l1_voltage, name: Feszültség }
+              - { entity: sensor.fo_inverter_grid_l1_current, name: Áram }
+              - { entity: sensor.fo_inverter_grid_frequency, name: Frekvencia }
+              - type: divider
+              - { entity: switch.fo_inverter_off_grid, name: Off-grid mód }
+              - { entity: switch.fo_inverter_grid_peak_shaving, name: Peak shaving }
+              - { entity: number.fo_inverter_grid_peak_shaving, name: Peak shaving határ }
+              - { entity: number.fo_inverter_grid_voltage_protection_high, name: Feszültségvédelem felső }
+              - { entity: number.fo_inverter_grid_voltage_protection_low, name: Feszültségvédelem alsó }
+              - { entity: number.fo_inverter_grid_reconnection_time, name: Visszakapcsolási idő }
+
+      # ---------------------------------------------------------- MUNKAMÓD
+      - type: grid
+        cards:
+          - type: heading
+            heading: Munkamód
+            icon: mdi:cog-transfer
+          - type: entities
+            entities:
+              - { entity: select.fo_inverter_work_mode, name: Work mode }
+              - { entity: select.fo_inverter_energy_pattern, name: Energy pattern }
+              - { entity: number.fo_inverter_zero_export_power, name: Zero export teljesítmény }
+              - { entity: select.fo_inverter_time_of_use, name: Time of Use }
+              - { entity: select.fo_inverter_io_mode, name: IO mód }
+              - { entity: switch.fo_inverter_smartload, name: SmartLoad }
+              - { entity: number.fo_inverter_smartload_on, name: SmartLoad BE (SOC) }
+              - { entity: number.fo_inverter_smartload_off, name: SmartLoad KI (SOC) }
+
+      # ---------------------------------------------------------- TIME OF USE PROGRAMOK
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Time of Use programok
+            icon: mdi:clock-time-four-outline
+          - type: markdown
+            grid_options: { columns: full }
+            content: |
+              | # | Kezdés | Töltés | Teljesítmény | SOC | Feszültség |
+              |:--:|:--:|:--|--:|--:|--:|
+              {% for i in range(1,7) -%}
+              {% set b = 'fo_inverter_program_' ~ i -%}
+              | {{ i }} | {{ states('time.'~b~'_time')[:5] }} | {{ states('select.'~b~'_charging') }} | {{ states('number.'~b~'_power') }} W | {{ states('number.'~b~'_soc') }} % | {{ states('number.'~b~'_voltage') }} V |
+              {% endfor %}
+          - type: entities
+            title: Szerkesztés
+            grid_options: { columns: full }
+            entities:
+              - type: section
+                label: Program 1
+              - time.fo_inverter_program_1_time
+              - select.fo_inverter_program_1_charging
+              - number.fo_inverter_program_1_power
+              - number.fo_inverter_program_1_soc
+              - type: section
+                label: Program 2
+              - time.fo_inverter_program_2_time
+              - select.fo_inverter_program_2_charging
+              - number.fo_inverter_program_2_power
+              - number.fo_inverter_program_2_soc
+              - type: section
+                label: Program 3
+              - time.fo_inverter_program_3_time
+              - select.fo_inverter_program_3_charging
+              - number.fo_inverter_program_3_power
+              - number.fo_inverter_program_3_soc
+              - type: section
+                label: Program 4
+              - time.fo_inverter_program_4_time
+              - select.fo_inverter_program_4_charging
+              - number.fo_inverter_program_4_power
+              - number.fo_inverter_program_4_soc
+              - type: section
+                label: Program 5
+              - time.fo_inverter_program_5_time
+              - select.fo_inverter_program_5_charging
+              - number.fo_inverter_program_5_power
+              - number.fo_inverter_program_5_soc
+              - type: section
+                label: Program 6
+              - time.fo_inverter_program_6_time
+              - select.fo_inverter_program_6_charging
+              - number.fo_inverter_program_6_power
+              - number.fo_inverter_program_6_soc
+
+      # ---------------------------------------------------------- ÉLETCIKLUS
+      - type: grid
+        cards:
+          - type: heading
+            heading: Életciklus összesítők
+            icon: mdi:counter
+          - type: entities
+            entities:
+              - { entity: sensor.deye_termeles_osszesen, name: Termelés }
+              - { entity: sensor.deye_fogyasztas_osszesen, name: Fogyasztás }
+              - { entity: sensor.deye_halozati_vetel_osszesen, name: Hálózati vétel }
+              - { entity: sensor.deye_akku_toltes_osszesen, name: Akku töltés }
+              - { entity: sensor.deye_akku_merites_osszesen, name: Akku merítés }
+              - type: divider
+              - { entity: sensor.deye_megtakaritas_osszesen, name: Megtakarítás összesen }
+              - { entity: sensor.deye_halozati_koltseg_osszesen, name: Hálózati költség összesen }
+          - type: markdown
+            content: |
+              {% set c = states('sensor.deye_akku_merites_osszesen') | float(0) %}
+              {% set cap = states('input_number.deye_akku_kapacitas') | float(15) %}
+              **Akku ciklusok (becslés):** {{ (c / cap) | round(0) | int }}
+              **Akku hatásfok:** {{ (c / (states('sensor.deye_akku_toltes_osszesen') | float(1)) * 100) | round(1) }} %
+
+      # ---------------------------------------------------------- DIAGNOSZTIKA
+      - type: grid
+        cards:
+          - type: heading
+            heading: Diagnosztika
+            icon: mdi:stethoscope
+          - type: entities
+            state_color: true
+            entities:
+              - { entity: binary_sensor.fo_inverter_connection, name: Fő inverter kapcsolat }
+              - { entity: sensor.fo_inverter_update_interval, name: Fő inv. frissítés }
+              - { entity: binary_sensor.inverter_2_connection, name: Inverter 2 kapcsolat }
+              - { entity: sensor.inverter_2_update_interval, name: Inv. 2 frissítés }
+              - { entity: switch.fo_inverter_access_point, name: Access point }
+              - { entity: select.fo_inverter_cloud, name: Cloud }
+          - type: button
+            name: Fő inverter újraindítása
+            icon: mdi:restart-alert
+            show_state: false
+            grid_options: { columns: 6, rows: 2 }
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target: { entity_id: button.fo_inverter_restart }
+              confirmation: { text: "Biztosan újraindítod a FŐ invertert? Rövid kimaradás lehet!" }
+          - type: button
+            name: Inverter 2 újraindítása
+            icon: mdi:restart-alert
+            show_state: false
+            grid_options: { columns: 6, rows: 2 }
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target: { entity_id: button.inverter_2_restart }
+              confirmation: { text: "Biztosan újraindítod az Inverter 2-t?" }
+
+      # ---------------------------------------------------------- RENDSZER BEÁLLÍTÁSOK
+      - type: grid
+        cards:
+          - type: heading
+            heading: Dashboard beállítások
+            icon: mdi:tune
+          - type: entities
+            entities:
+              - input_boolean.deye_ertesitesek
+              - input_datetime.deye_reggeli_ertesites
+              - input_datetime.deye_esti_ertesites
+              - type: divider
+              - input_number.deye_aramar_megtakaritas
+              - input_number.deye_aramar_vetel
+              - type: divider
+              - input_number.deye_akku_kapacitas
+              - input_number.deye_akku_tartalek_soc
+              - input_number.deye_ajanlas_kuszob
+              - input_number.deye_ejszakai_arany
+          - type: entities
+            title: Elemzés
+            entities:
+              - { entity: sensor.deye_fogyasztasi_ajanlas, name: Ajánlás }
+              - { entity: sensor.deye_mai_energiamerleg, name: Mai mérleg }
+              - { entity: sensor.deye_holnapi_energiamerleg, name: Holnapi mérleg }
+              - { entity: sensor.deye_varhato_napi_fogyasztas, name: Várható napi fogyasztás }
+              - { entity: sensor.deye_atlagfogyasztas_7_nap, name: 7 napos átlag }
+              - { entity: binary_sensor.deye_napenergia_tobblet, name: Napenergia-többlet }

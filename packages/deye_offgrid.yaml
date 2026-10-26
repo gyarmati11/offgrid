@@ -1,0 +1,986 @@
+################################################################################
+#  DEYE OFF-GRID RENDSZER – Home Assistant package
+#  2 × 6 kW párhuzamos Deye inverter (Solarman) + 15 kWh akku + 3 (bővíthető) sztring
+#
+#  Hely:   /config/packages/deye_offgrid.yaml
+#  Kell a configuration.yaml-ba:
+#     homeassistant:
+#       packages: !include_dir_named packages
+#
+#  ⚠️ CSAK az "1. FORRÁS ENTITÁSOK" és a "2. ELŐREJELZÉS" részben lévő
+#     sensor.fo_inverter_* / sensor.inverter_2_* / Forecast.Solar / weather
+#     entitásneveket kell ellenőrizni. Minden más (dashboard, automatizmusok)
+#     már csak a saját sensor.deye_* entitásokat használja.
+#     (Ellenőrző sablon: README.md → "Entitásnevek ellenőrzése")
+################################################################################
+
+################################################################################
+#  BEÁLLÍTÁSOK (UI-ból állíthatók – Szerviz nézet → Beállítások)
+################################################################################
+input_number:
+  deye_aramar_megtakaritas:
+    name: Elkerült áramár (saját termelés értéke)
+    icon: mdi:cash-plus
+    min: 0
+    max: 300
+    step: 0.01
+    mode: box
+    unit_of_measurement: Ft/kWh
+  deye_aramar_vetel:
+    name: Hálózati vételi ár
+    icon: mdi:cash-minus
+    min: 0
+    max: 300
+    step: 0.01
+    mode: box
+    unit_of_measurement: Ft/kWh
+  deye_akku_kapacitas:
+    name: Akku hasznos kapacitás
+    icon: mdi:battery-high
+    min: 0
+    max: 100
+    step: 0.1
+    mode: box
+    unit_of_measurement: kWh
+  deye_akku_tartalek_soc:
+    name: Akku tartalék (ez alá nem számolunk)
+    icon: mdi:battery-lock
+    min: 0
+    max: 60
+    step: 1
+    mode: slider
+    unit_of_measurement: "%"
+  deye_ajanlas_kuszob:
+    name: Ajánlás küszöb (ennyi többlet már „sok”)
+    icon: mdi:scale-balance
+    min: 0
+    max: 30
+    step: 0.5
+    mode: box
+    unit_of_measurement: kWh
+  deye_ejszakai_arany:
+    name: Éjszakai fogyasztás aránya (éjfél → napfelkelte)
+    icon: mdi:weather-night
+    min: 0
+    max: 80
+    step: 1
+    mode: slider
+    unit_of_measurement: "%"
+
+input_boolean:
+  deye_ertesitesek:
+    name: Deye értesítések
+    icon: mdi:bell-ring
+  deye_alapertekek_beallitva:
+    name: Deye alapértékek beállítva (belső)
+    icon: mdi:cog
+
+input_select:
+  deye_idoszak:
+    name: Statisztika időszak
+    icon: mdi:calendar-range
+    options:
+      - Ma
+      - Hét
+      - Hónap
+      - Év
+
+input_datetime:
+  deye_reggeli_ertesites:
+    name: Reggeli ajánlás időpontja
+    has_date: false
+    has_time: true
+  deye_esti_ertesites:
+    name: Esti (holnapi) előrejelzés időpontja
+    has_date: false
+    has_time: true
+
+################################################################################
+#  SZTRINGEK CSOPORTJA – ÚJ SZTRING: vedd fel ide + alább a "sensor.deye_string_N"-t
+################################################################################
+group:
+  deye_napelem_sztringek:
+    name: Deye napelem sztringek
+    entities:
+      - sensor.deye_string_1
+      - sensor.deye_string_2
+      - sensor.deye_string_3
+      # - sensor.deye_string_4
+
+template:
+  ##############################################################################
+  #  1. FORRÁS ENTITÁSOK – a két inverter adatainak összesítése
+  ##############################################################################
+  - sensor:
+      # ---------------- SZTRINGEK (bővíthető) ----------------
+      # Minden sztring: forrás teljesítmény + hozzá tartozó Forecast.Solar tömb.
+      - name: Deye string 1
+        unique_id: deye_string_1
+        icon: mdi:solar-panel-large
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: "{{ states('sensor.fo_inverter_pv2_power') | float(0) | round(0) }}"   # ⚠️ ELLENŐRIZD
+        attributes:
+          felirat: Ház tető
+          dolesszog: 45        # Forecast.Solar szerinti dőlésszög (0 = vízszintes)
+          azimut: 180           # 0 = É, 90 = K, 180 = D, 270 = Ny
+          elorejelzes_most: "{{ states('sensor.haz_elorejelzes_estimated_power_production_now') }}"   # ⚠️
+          tajolas: "45° / D (180°)"
+          csucs_w: 4900
+          elorejelzes_ma: "{{ states('sensor.haz_elorejelzes_estimated_energy_production_today') }}"   # ⚠️
+          elorejelzes_holnap: "{{ states('sensor.haz_elorejelzes_estimated_energy_production_tomorrow') }}"   # ⚠️
+      - name: Deye string 2
+        unique_id: deye_string_2
+        icon: mdi:solar-panel
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: "{{ states('sensor.inverter_2_pv1_power') | float(0) | round(0) }}"   # ⚠️ ELLENŐRIZD
+        attributes:
+          felirat: Garázs DK
+          dolesszog: 70        # Forecast.Solar szerinti dőlésszög (0 = vízszintes)
+          azimut: 120           # 0 = É, 90 = K, 180 = D, 270 = Ny
+          elorejelzes_most: "{{ states('sensor.garazs_betermelo_elorejelzes_estimated_power_production_now') }}"   # ⚠️
+          tajolas: "70° / DK (120°)"
+          csucs_w: 2000
+          elorejelzes_ma: "{{ states('sensor.garazs_betermelo_elorejelzes_estimated_energy_production_today') }}"   # ⚠️
+          elorejelzes_holnap: "{{ states('sensor.garazs_betermelo_elorejelzes_estimated_energy_production_tomorrow') }}"   # ⚠️
+      - name: Deye string 3
+        unique_id: deye_string_3
+        icon: mdi:solar-panel
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: "{{ states('sensor.inverter_2_pv2_power') | float(0) | round(0) }}"   # ⚠️ ELLENŐRIZD (micro esetén pl. generator/micro port)
+        attributes:
+          felirat: Garázs DNY / Műhely nyugat
+          dolesszog: 70        # Forecast.Solar szerinti dőlésszög (0 = vízszintes)
+          azimut: 270           # 0 = É, 90 = K, 180 = D, 270 = Ny
+          elorejelzes_most: "{{ states('sensor.muhely_nyugat_estimated_power_production_now') }}"   # ⚠️
+          tajolas: "70° / Ny (270°)"
+          csucs_w: 2000
+          elorejelzes_ma: "{{ states('sensor.muhely_nyugat_estimated_energy_production_today') }}"   # ⚠️
+          elorejelzes_holnap: "{{ states('sensor.muhely_nyugat_estimated_energy_production_tomorrow') }}"   # ⚠️
+      # ---- ÚJ SZTRING SABLON (másold, írd át, és vedd fel a group-ba) ----
+      # - name: Deye string 4
+      #   unique_id: deye_string_4
+      #   icon: mdi:solar-panel
+      #   unit_of_measurement: W
+      #   device_class: power
+      #   state_class: measurement
+      #   state: "{{ states('sensor.XXXX_pv_power') | float(0) | round(0) }}"
+      #   attributes:
+      #     felirat: Új tömb
+      #     dolesszog: 30
+      #     azimut: 180
+      #     tajolas: "30° / D"
+      #     csucs_w: 3000
+
+      # ---------------- PILLANATNYI TELJESÍTMÉNYEK ----------------
+      - name: Deye PV teljesítmény
+        unique_id: deye_pv_teljesitmeny
+        icon: mdi:solar-power-variant
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: >
+          {{ expand('group.deye_napelem_sztringek')
+             | map(attribute='state') | map('float', 0) | sum | round(0) }}
+        attributes:
+          csucs_w: >
+            {{ expand('group.deye_napelem_sztringek')
+               | map(attribute='attributes.csucs_w') | map('float', 0) | sum | round(0) }}
+
+      - name: Deye fogyasztás teljesítmény
+        unique_id: deye_fogyasztas_teljesitmeny
+        icon: mdi:home-lightning-bolt
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: >
+          {{ (states('sensor.fo_inverter_load_power') | float(0)
+            + states('sensor.inverter_2_load_power') | float(0)) | round(0) }}
+        availability: "{{ has_value('sensor.fo_inverter_load_power') }}"
+
+      # Deye konvenció: + = merítés, − = töltés
+      - name: Deye akku teljesítmény
+        unique_id: deye_akku_teljesitmeny
+        icon: mdi:battery-charging
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: >
+          {{ (states('sensor.fo_inverter_battery_power') | float(0)
+            + states('sensor.inverter_2_battery_power') | float(0)) | round(0) }}
+        availability: "{{ has_value('sensor.fo_inverter_battery_power') }}"
+
+      - name: Deye akku áram
+        unique_id: deye_akku_aram
+        icon: mdi:current-dc
+        unit_of_measurement: A
+        device_class: current
+        state_class: measurement
+        state: >
+          {{ (states('sensor.fo_inverter_battery_current') | float(0)
+            + states('sensor.inverter_2_battery_current') | float(0)) | round(2) }}
+        availability: "{{ has_value('sensor.fo_inverter_battery_current') }}"
+
+      - name: Deye hálózat teljesítmény
+        unique_id: deye_halozat_teljesitmeny
+        icon: mdi:transmission-tower
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: >
+          {{ (states('sensor.fo_inverter_grid_power') | float(0)
+            + states('sensor.inverter_2_grid_power') | float(0)) | round(0) }}
+        availability: "{{ has_value('sensor.fo_inverter_grid_power') }}"
+
+      - name: Deye akku SOC
+        unique_id: deye_akku_soc
+        unit_of_measurement: "%"
+        device_class: battery
+        state_class: measurement
+        state: "{{ states('sensor.fo_inverter_battery') | float(0) | round(0) }}"
+        availability: "{{ has_value('sensor.fo_inverter_battery') }}"
+        attributes:
+          allapot: >
+            {% set p = states('sensor.deye_akku_teljesitmeny') | float(0) %}
+            {% set m = states('sensor.deye_akku_hatralevo_ido') | int(0) %}
+            {% set ido = (m // 60) ~ ' ó ' ~ (m % 60) ~ ' p' %}
+            {% if p > 30 %}Merül {{ p | round(0) | int }} W · ~{{ ido }}
+            {% elif p < -30 %}Töltődik {{ (-p) | round(0) | int }} W · tele ~{{ ido }}
+            {% else %}Nyugalmi{% endif %}
+
+      - name: Deye akku hasznos energia
+        unique_id: deye_akku_hasznos_energia
+        icon: mdi:battery-arrow-down
+        unit_of_measurement: kWh
+        device_class: energy_storage
+        state_class: measurement
+        state: >
+          {% set soc = states('sensor.deye_akku_soc') | float(0) %}
+          {% set res = states('input_number.deye_akku_tartalek_soc') | float(10) %}
+          {% set cap = states('input_number.deye_akku_kapacitas') | float(15) %}
+          {{ ([0, (soc - res) / 100 * cap] | max) | round(2) }}
+
+      - name: Deye akku hátralévő idő
+        unique_id: deye_akku_hatralevo_ido
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        device_class: duration
+        state: >
+          {% set soc = states('sensor.deye_akku_soc') | float(0) %}
+          {% set p = states('sensor.deye_akku_teljesitmeny') | float(0) %}
+          {% set cap = states('input_number.deye_akku_kapacitas') | float(15) %}
+          {% if p > 30 %}
+            {{ (states('sensor.deye_akku_hasznos_energia') | float(0) / (p / 1000) * 60) | round(0) }}
+          {% elif p < -30 %}
+            {{ ((100 - soc) / 100 * cap / (-p / 1000) * 60) | round(0) }}
+          {% else %}0{% endif %}
+
+      # ---------------- ÖSSZESÍTETT ÉLETCIKLUS SZÁMLÁLÓK ----------------
+      # Ezekből készül minden napi/heti/havi/éves statisztika és grafikon.
+      - name: Deye termelés összesen
+        unique_id: deye_termeles_osszesen
+        icon: mdi:solar-power
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        state: >
+          {{ (states('sensor.fo_inverter_total_production') | float(0)
+            + states('sensor.inverter_2_total_production') | float(0)) | round(2) }}
+        availability: >
+          {{ states('sensor.fo_inverter_total_production') | float(0) > 0
+             and states('sensor.inverter_2_total_production') | float(0) > 0 }}
+
+      - name: Deye fogyasztás összesen
+        unique_id: deye_fogyasztas_osszesen
+        icon: mdi:home-lightning-bolt-outline
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        state: >
+          {{ (states('sensor.fo_inverter_total_load_consumption') | float(0)
+            + states('sensor.inverter_2_total_load_consumption') | float(0)) | round(2) }}
+        availability: >
+          {{ states('sensor.fo_inverter_total_load_consumption') | float(0) > 0
+             and states('sensor.inverter_2_total_load_consumption') | float(0) > 0 }}
+
+      - name: Deye hálózati vétel összesen
+        unique_id: deye_halozati_vetel_osszesen
+        icon: mdi:transmission-tower-import
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        state: >
+          {{ (states('sensor.fo_inverter_total_energy_import') | float(0)
+            + states('sensor.inverter_2_total_energy_import') | float(0)) | round(2) }}
+        availability: >
+          {{ is_number(states('sensor.fo_inverter_total_energy_import'))
+             and is_number(states('sensor.inverter_2_total_energy_import')) }}
+
+      - name: Deye akku töltés összesen
+        unique_id: deye_akku_toltes_osszesen
+        icon: mdi:battery-plus
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        state: >
+          {{ (states('sensor.fo_inverter_total_battery_charge') | float(0)
+            + states('sensor.inverter_2_total_battery_charge') | float(0)) | round(2) }}
+        availability: >
+          {{ states('sensor.fo_inverter_total_battery_charge') | float(0) > 0 }}
+
+      - name: Deye akku merítés összesen
+        unique_id: deye_akku_merites_osszesen
+        icon: mdi:battery-minus
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        state: >
+          {{ (states('sensor.fo_inverter_total_battery_discharge') | float(0)
+            + states('sensor.inverter_2_total_battery_discharge') | float(0)) | round(2) }}
+        availability: >
+          {{ states('sensor.fo_inverter_total_battery_discharge') | float(0) > 0 }}
+
+  ##############################################################################
+  #  2/B. SZTRINGEK: kihasználtság (%) és napbeesési szög – új sztringnél másold a blokkot
+  ##############################################################################
+  - sensor:
+      - name: Deye string 1 kihasználtság
+        unique_id: deye_string_1_kihasznaltsag
+        icon: mdi:gauge
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: >
+          {% set w = states('sensor.deye_string_1') | float(0) %}{% set cs = state_attr('sensor.deye_string_1', 'csucs_w') | float(0) %}
+          {{ (w / cs * 100) | round(0) if cs > 0 else 0 }}
+        attributes:
+          # az összes PV termelésből ennyi %-ot ad ez a sztring
+          arany_osszesbol: >
+            {% set w = states('sensor.deye_string_1') | float(0) %}{% set t = states('sensor.deye_pv_teljesitmeny') | float(0) %}
+            {{ (w / t * 100) | round(0) if t > 20 else 0 }}
+          # a Forecast.Solar szerint most várhatóhoz képest (árnyék, kosz, hiba jelzésére)
+          vartbol: >
+            {% set w = states('sensor.deye_string_1') | float(0) %}{% set v = state_attr('sensor.deye_string_1', 'elorejelzes_most') | float(0) %}
+            {{ (w / v * 100) | round(0) if v > 50 else none }}
+      - name: Deye string 1 napszög
+        unique_id: deye_string_1_napszog
+        icon: mdi:sun-angle
+        unit_of_measurement: "°"
+        state_class: measurement
+        # a napsugár és a panel FELÜLETE közti szög: 90° = merőlegesen éri (ideális), 0° = súrolja / nem éri
+        state: >
+          {% set el = state_attr('sun.sun', 'elevation') | float(-90) %}
+          {% set az = state_attr('sun.sun', 'azimuth') | float(0) %}
+          {% set b = state_attr('sensor.deye_string_1', 'dolesszog') | float(0) %}
+          {% set pa = state_attr('sensor.deye_string_1', 'azimut') | float(180) %}
+          {% set c = sin(el * pi / 180) * cos(b * pi / 180) + cos(el * pi / 180) * sin(b * pi / 180) * cos((az - pa) * pi / 180) %}
+          {{ (asin([[c, 1] | min, -1] | max) * 180 / pi) | round(0) if el > 0 and c > 0 else 0 }}
+        attributes:
+          beesesi_szog: >
+            {% set f = states('sensor.deye_string_1_napszog') | float(0) %}{{ (90 - f) | round(0) if f > 0 else none }}
+          cos_tenyezo: >
+            {% set f = states('sensor.deye_string_1_napszog') | float(0) %}{{ (sin(f * pi / 180) * 100) | round(0) }}
+          nap_magassag: "{{ state_attr('sun.sun', 'elevation') }}"
+          nap_azimut: "{{ state_attr('sun.sun', 'azimuth') }}"
+      - name: Deye string 2 kihasználtság
+        unique_id: deye_string_2_kihasznaltsag
+        icon: mdi:gauge
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: >
+          {% set w = states('sensor.deye_string_2') | float(0) %}{% set cs = state_attr('sensor.deye_string_2', 'csucs_w') | float(0) %}
+          {{ (w / cs * 100) | round(0) if cs > 0 else 0 }}
+        attributes:
+          # az összes PV termelésből ennyi %-ot ad ez a sztring
+          arany_osszesbol: >
+            {% set w = states('sensor.deye_string_2') | float(0) %}{% set t = states('sensor.deye_pv_teljesitmeny') | float(0) %}
+            {{ (w / t * 100) | round(0) if t > 20 else 0 }}
+          # a Forecast.Solar szerint most várhatóhoz képest (árnyék, kosz, hiba jelzésére)
+          vartbol: >
+            {% set w = states('sensor.deye_string_2') | float(0) %}{% set v = state_attr('sensor.deye_string_2', 'elorejelzes_most') | float(0) %}
+            {{ (w / v * 100) | round(0) if v > 50 else none }}
+      - name: Deye string 2 napszög
+        unique_id: deye_string_2_napszog
+        icon: mdi:sun-angle
+        unit_of_measurement: "°"
+        state_class: measurement
+        # a napsugár és a panel FELÜLETE közti szög: 90° = merőlegesen éri (ideális), 0° = súrolja / nem éri
+        state: >
+          {% set el = state_attr('sun.sun', 'elevation') | float(-90) %}
+          {% set az = state_attr('sun.sun', 'azimuth') | float(0) %}
+          {% set b = state_attr('sensor.deye_string_2', 'dolesszog') | float(0) %}
+          {% set pa = state_attr('sensor.deye_string_2', 'azimut') | float(180) %}
+          {% set c = sin(el * pi / 180) * cos(b * pi / 180) + cos(el * pi / 180) * sin(b * pi / 180) * cos((az - pa) * pi / 180) %}
+          {{ (asin([[c, 1] | min, -1] | max) * 180 / pi) | round(0) if el > 0 and c > 0 else 0 }}
+        attributes:
+          beesesi_szog: >
+            {% set f = states('sensor.deye_string_2_napszog') | float(0) %}{{ (90 - f) | round(0) if f > 0 else none }}
+          cos_tenyezo: >
+            {% set f = states('sensor.deye_string_2_napszog') | float(0) %}{{ (sin(f * pi / 180) * 100) | round(0) }}
+          nap_magassag: "{{ state_attr('sun.sun', 'elevation') }}"
+          nap_azimut: "{{ state_attr('sun.sun', 'azimuth') }}"
+      - name: Deye string 3 kihasználtság
+        unique_id: deye_string_3_kihasznaltsag
+        icon: mdi:gauge
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: >
+          {% set w = states('sensor.deye_string_3') | float(0) %}{% set cs = state_attr('sensor.deye_string_3', 'csucs_w') | float(0) %}
+          {{ (w / cs * 100) | round(0) if cs > 0 else 0 }}
+        attributes:
+          # az összes PV termelésből ennyi %-ot ad ez a sztring
+          arany_osszesbol: >
+            {% set w = states('sensor.deye_string_3') | float(0) %}{% set t = states('sensor.deye_pv_teljesitmeny') | float(0) %}
+            {{ (w / t * 100) | round(0) if t > 20 else 0 }}
+          # a Forecast.Solar szerint most várhatóhoz képest (árnyék, kosz, hiba jelzésére)
+          vartbol: >
+            {% set w = states('sensor.deye_string_3') | float(0) %}{% set v = state_attr('sensor.deye_string_3', 'elorejelzes_most') | float(0) %}
+            {{ (w / v * 100) | round(0) if v > 50 else none }}
+      - name: Deye string 3 napszög
+        unique_id: deye_string_3_napszog
+        icon: mdi:sun-angle
+        unit_of_measurement: "°"
+        state_class: measurement
+        # a napsugár és a panel FELÜLETE közti szög: 90° = merőlegesen éri (ideális), 0° = súrolja / nem éri
+        state: >
+          {% set el = state_attr('sun.sun', 'elevation') | float(-90) %}
+          {% set az = state_attr('sun.sun', 'azimuth') | float(0) %}
+          {% set b = state_attr('sensor.deye_string_3', 'dolesszog') | float(0) %}
+          {% set pa = state_attr('sensor.deye_string_3', 'azimut') | float(180) %}
+          {% set c = sin(el * pi / 180) * cos(b * pi / 180) + cos(el * pi / 180) * sin(b * pi / 180) * cos((az - pa) * pi / 180) %}
+          {{ (asin([[c, 1] | min, -1] | max) * 180 / pi) | round(0) if el > 0 and c > 0 else 0 }}
+        attributes:
+          beesesi_szog: >
+            {% set f = states('sensor.deye_string_3_napszog') | float(0) %}{{ (90 - f) | round(0) if f > 0 else none }}
+          cos_tenyezo: >
+            {% set f = states('sensor.deye_string_3_napszog') | float(0) %}{{ (sin(f * pi / 180) * 100) | round(0) }}
+          nap_magassag: "{{ state_attr('sun.sun', 'elevation') }}"
+          nap_azimut: "{{ state_attr('sun.sun', 'azimuth') }}"
+
+  ##############################################################################
+  #  2. ELŐREJELZÉS – Forecast.Solar (3 tömb) + időjárás alapú becslés 3–5. napra
+  ##############################################################################
+  - sensor:
+      - name: Deye előrejelzés ma
+        unique_id: deye_elorejelzes_ma
+        icon: mdi:solar-power-variant
+        unit_of_measurement: kWh
+        device_class: energy
+        state: >
+          {{ (states('sensor.haz_elorejelzes_estimated_energy_production_today') | float(0)
+            + states('sensor.garazs_betermelo_elorejelzes_estimated_energy_production_today') | float(0)
+            + states('sensor.muhely_nyugat_estimated_energy_production_today') | float(0)) | round(1) }}
+
+      - name: Deye előrejelzés ma hátralévő
+        unique_id: deye_elorejelzes_ma_hatralevo
+        icon: mdi:solar-power-variant-outline
+        unit_of_measurement: kWh
+        device_class: energy
+        state: >
+          {{ (states('sensor.haz_elorejelzes_estimated_energy_production_remaining_today') | float(0)
+            + states('sensor.garazs_betermelo_elorejelzes_estimated_energy_production_remaining_today') | float(0)
+            + states('sensor.muhely_nyugat_estimated_energy_production_remaining_today') | float(0)) | round(1) }}
+
+      - name: Deye előrejelzés holnap
+        unique_id: deye_elorejelzes_holnap
+        icon: mdi:weather-sunny-alert
+        unit_of_measurement: kWh
+        device_class: energy
+        state: >
+          {{ (states('sensor.haz_elorejelzes_estimated_energy_production_tomorrow') | float(0)
+            + states('sensor.garazs_betermelo_elorejelzes_estimated_energy_production_tomorrow') | float(0)
+            + states('sensor.muhely_nyugat_estimated_energy_production_tomorrow') | float(0)) | round(1) }}
+
+      - name: Deye előrejelzés most
+        unique_id: deye_elorejelzes_most
+        icon: mdi:solar-power
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        state: >
+          {{ (states('sensor.haz_elorejelzes_estimated_power_production_now') | float(0)
+            + states('sensor.garazs_betermelo_elorejelzes_estimated_power_production_now') | float(0)
+            + states('sensor.muhely_nyugat_estimated_power_production_now') | float(0)) | round(0) }}
+
+  # 5 napos előrejelzés: 0–1. nap Forecast.Solar, 2–4. nap felhőzet alapú becslés,
+  # amit a holnapi Forecast.Solar értékhez kalibrálunk (Kasten–Czeplak modell).
+  - triggers:
+      - trigger: time_pattern
+        minutes: "/30"
+      - trigger: homeassistant
+        event: start
+      - trigger: state
+        entity_id:
+          - sensor.deye_elorejelzes_ma
+          - sensor.deye_elorejelzes_holnap
+    actions:
+      - action: weather.get_forecasts
+        continue_on_error: true
+        target:
+          entity_id: weather.forecast_home          # ⚠️ ELLENŐRIZD az időjárás entitást
+        data:
+          type: daily
+        response_variable: idojaras
+    sensor:
+      - name: Deye előrejelzés napok
+        unique_id: deye_elorejelzes_napok
+        icon: mdi:calendar-weather
+        device_class: timestamp
+        state: "{{ now().isoformat() }}"
+        attributes:
+          napok: >
+            {% set we = 'weather.forecast_home' %}
+            {% set fc = idojaras[we].forecast if (idojaras is defined and idojaras is mapping and we in idojaras) else [] %}
+            {% set cmap = {'sunny':10,'clear-night':10,'windy':40,'windy-variant':60,'partlycloudy':50,
+                           'cloudy':90,'fog':90,'rainy':95,'pouring':100,'snowy':95,'snowy-rainy':100,
+                           'lightning':95,'lightning-rainy':100,'hail':100,'exceptional':80} %}
+            {% set emap = {'sunny':'☀️','clear-night':'☀️','windy':'🌬️','windy-variant':'🌬️','partlycloudy':'⛅',
+                           'cloudy':'☁️','fog':'🌫️','rainy':'🌧️','pouring':'🌧️','snowy':'🌨️','snowy-rainy':'🌨️',
+                           'lightning':'⛈️','lightning-rainy':'⛈️','hail':'🌨️','exceptional':'⚠️'} %}
+            {% set napnev = ['Hétfő','Kedd','Szerda','Csütörtök','Péntek','Szombat','Vasárnap'] %}
+            {% set ma = states('sensor.deye_elorejelzes_ma') | float(0) %}
+            {% set holnap = states('sensor.deye_elorejelzes_holnap') | float(0) %}
+            {% set ns = namespace(felho={}, felt={}, napok=[]) %}
+            {% for f in fc %}
+              {% set d = as_local(as_datetime(f.datetime)).strftime('%Y-%m-%d') %}
+              {% if d not in ns.felho %}
+                {% set c = f.cloud_coverage if (f.cloud_coverage is defined and f.cloud_coverage is number) else cmap.get(f.condition, 60) %}
+                {% set ns.felho = dict(ns.felho, **{d: c}) %}
+                {% set ns.felt = dict(ns.felt, **{d: f.condition}) %}
+              {% endif %}
+            {% endfor %}
+            {% set d0 = now().strftime('%Y-%m-%d') %}
+            {% set d1 = (now() + timedelta(days=1)).strftime('%Y-%m-%d') %}
+            {% set f0 = [1 - 0.75 * (ns.felho.get(d0, 50) / 100) ** 3.4, 0.25] | max %}
+            {% set f1 = [1 - 0.75 * (ns.felho.get(d1, 50) / 100) ** 3.4, 0.25] | max %}
+            {# kalibráció a kevésbé felhős napra (megbízhatóbb), felső korlát: 2× a nagyobbik ismert nap #}
+            {% set alap = (holnap / f1) if (holnap > 0 and ns.felho.get(d1, 50) <= ns.felho.get(d0, 50)) or ma <= 0 else (ma / f0) %}
+            {% set alap = [alap, ([ma, holnap] | max) * 2] | min %}
+            {% for i in range(5) %}
+              {% set nap = now() + timedelta(days=i) %}
+              {% set d = nap.strftime('%Y-%m-%d') %}
+              {% set c = ns.felho.get(d, 60) %}
+              {% set cond = ns.felt.get(d, 'unknown') %}
+              {% if i == 0 %}{% set v = ma %}{% set src = 'Forecast.Solar' %}
+              {% elif i == 1 %}{% set v = holnap %}{% set src = 'Forecast.Solar' %}
+              {% else %}{% set v = alap * (1 - 0.75 * (c / 100) ** 3.4) %}{% set src = 'becslés' %}{% endif %}
+              {% set ns.napok = ns.napok + [{
+                  'datum': d,
+                  'nap': 'Ma' if i == 0 else ('Holnap' if i == 1 else napnev[nap.weekday()]),
+                  'kwh': v | round(1),
+                  'felhozet': c | round(0),
+                  'idojaras': cond,
+                  'emoji': emap.get(cond, '🌤️'),
+                  'forras': src }] %}
+            {% endfor %}
+            {{ ns.napok }}
+
+  ##############################################################################
+  #  3. ÁTLAGFOGYASZTÁS + NAPI ZÁRÓÉRTÉKEK (éjfél előtt rögzítve)
+  ##############################################################################
+  - triggers:
+      - trigger: time
+        at: "23:59:30"
+    sensor:
+      - name: Deye átlagfogyasztás 7 nap
+        unique_id: deye_atlagfogyasztas_7_nap
+        icon: mdi:chart-bell-curve
+        unit_of_measurement: kWh
+        state_class: measurement
+        state: >
+          {% set l = ((this.attributes.get('elozmeny') or []) + [states('sensor.deye_fogyasztas_napi') | float(0)])[-7:] %}
+          {{ (l | sum / l | count) | round(2) }}
+        attributes:
+          elozmeny: >
+            {{ ((this.attributes.get('elozmeny') or []) + [states('sensor.deye_fogyasztas_napi') | float(0) | round(2)])[-7:] }}
+      - name: Deye önellátás napi záró
+        unique_id: deye_onellatas_napi_zaro
+        icon: mdi:shield-sun
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: "{{ states('sensor.deye_onellatas_napi') | float(0) }}"
+
+  ##############################################################################
+  #  4. FORINT – halmozott megtakarítás és hálózati költség
+  #     (ár változásakor a múlt nem számolódik át – ez így helyes)
+  ##############################################################################
+  - triggers:
+      - trigger: state
+        entity_id: sensor.deye_fogyasztas_osszesen
+        id: fogy
+      - trigger: state
+        entity_id: sensor.deye_halozati_vetel_osszesen
+        id: vetel
+    sensor:
+      - name: Deye megtakarítás összesen
+        unique_id: deye_megtakaritas_osszesen
+        icon: mdi:piggy-bank
+        unit_of_measurement: Ft
+        state_class: total
+        state: >
+          {% set elozo = this.state | float(0) %}
+          {% if trigger.from_state and is_number(trigger.from_state.state) and is_number(trigger.to_state.state) %}
+            {% set d = trigger.to_state.state | float - trigger.from_state.state | float %}
+            {% set ar = states('input_number.deye_aramar_megtakaritas') | float(0) %}
+            {% if 0 < d < 5 %}
+              {{ (elozo + (d * ar if trigger.id == 'fogy' else -d * ar)) | round(2) }}
+            {% else %}{{ elozo }}{% endif %}
+          {% else %}{{ elozo }}{% endif %}
+      - name: Deye hálózati költség összesen
+        unique_id: deye_halozati_koltseg_osszesen
+        icon: mdi:cash-minus
+        unit_of_measurement: Ft
+        state_class: total_increasing
+        state: >
+          {% set elozo = this.state | float(0) %}
+          {% if trigger.id == 'vetel' and trigger.from_state and is_number(trigger.from_state.state) and is_number(trigger.to_state.state) %}
+            {% set d = trigger.to_state.state | float - trigger.from_state.state | float %}
+            {% if 0 < d < 5 %}
+              {{ (elozo + d * states('input_number.deye_aramar_vetel') | float(0)) | round(2) }}
+            {% else %}{{ elozo }}{% endif %}
+          {% else %}{{ elozo }}{% endif %}
+
+  ##############################################################################
+  #  5. ÖNELLÁTÁS, ENERGIAMÉRLEG, AJÁNLÁS
+  ##############################################################################
+  - sensor:
+      - name: Deye önellátás napi
+        unique_id: deye_onellatas_napi
+        icon: mdi:shield-sun
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: >
+          {% set f = states('sensor.deye_fogyasztas_napi') | float(0) %}
+          {% set v = states('sensor.deye_vetel_napi') | float(0) %}
+          {{ ([0, (f - v) / f * 100] | max) | round(1) if f > 0 else 100 }}
+      - name: Deye önellátás heti
+        unique_id: deye_onellatas_heti
+        icon: mdi:shield-sun
+        unit_of_measurement: "%"
+        state: >
+          {% set f = states('sensor.deye_fogyasztas_heti') | float(0) %}
+          {% set v = states('sensor.deye_vetel_heti') | float(0) %}
+          {{ ([0, (f - v) / f * 100] | max) | round(1) if f > 0 else 100 }}
+      - name: Deye önellátás havi
+        unique_id: deye_onellatas_havi
+        icon: mdi:shield-sun
+        unit_of_measurement: "%"
+        state: >
+          {% set f = states('sensor.deye_fogyasztas_havi') | float(0) %}
+          {% set v = states('sensor.deye_vetel_havi') | float(0) %}
+          {{ ([0, (f - v) / f * 100] | max) | round(1) if f > 0 else 100 }}
+      - name: Deye önellátás éves
+        unique_id: deye_onellatas_eves
+        icon: mdi:shield-sun
+        unit_of_measurement: "%"
+        state: >
+          {% set f = states('sensor.deye_fogyasztas_eves') | float(0) %}
+          {% set v = states('sensor.deye_vetel_eves') | float(0) %}
+          {{ ([0, (f - v) / f * 100] | max) | round(1) if f > 0 else 100 }}
+
+      - name: Deye várható napi fogyasztás
+        unique_id: deye_varhato_napi_fogyasztas
+        icon: mdi:home-clock
+        unit_of_measurement: kWh
+        state: >
+          {% set a = states('sensor.deye_atlagfogyasztas_7_nap') | float(0) %}
+          {% if a <= 0 %}{% set a = state_attr('sensor.deye_fogyasztas_napi', 'last_period') | float(0) %}{% endif %}
+          {% if a <= 0 %}{% set a = 10 %}{% endif %}
+          {{ a | round(1) }}
+
+      # Mai mérleg: ami még jön (nap) + ami az akkuban van − ami még kell ma − éjszakai tartalék
+      - name: Deye mai energiamérleg
+        unique_id: deye_mai_energiamerleg
+        icon: mdi:scale-balance
+        unit_of_measurement: kWh
+        state: >
+          {% set avg = states('sensor.deye_varhato_napi_fogyasztas') | float(10) %}
+          {% set hatra = states('sensor.deye_elorejelzes_ma_hatralevo') | float(0) %}
+          {% set akku = states('sensor.deye_akku_hasznos_energia') | float(0) %}
+          {% set fogyott = states('sensor.deye_fogyasztas_napi') | float(0) %}
+          {% set ejszaka = avg * states('input_number.deye_ejszakai_arany') | float(35) / 100 %}
+          {{ (hatra + akku - ([avg - fogyott, 0] | max) - ejszaka) | round(1) }}
+      - name: Deye holnapi energiamérleg
+        unique_id: deye_holnapi_energiamerleg
+        icon: mdi:scale-balance
+        unit_of_measurement: kWh
+        state: >
+          {{ (states('sensor.deye_elorejelzes_holnap') | float(0)
+             - states('sensor.deye_varhato_napi_fogyasztas') | float(10)) | round(1) }}
+
+      - name: Deye ajánlás kód
+        unique_id: deye_ajanlas_kod
+        icon: mdi:code-tags
+        state: >
+          {% set m = states('sensor.deye_mai_energiamerleg') | float(0) %}
+          {% set h = states('sensor.deye_holnapi_energiamerleg') | float(0) %}
+          {% set k = states('input_number.deye_ajanlas_kuszob') | float(3) %}
+          {% if is_state('binary_sensor.deye_napenergia_tobblet', 'on') %}most_tobblet
+          {% elif m >= k and h < 0 %}ma_fogyassz
+          {% elif m < 0 and h >= k %}holnapra_halaszd
+          {% elif m >= k and h >= k %}boseg
+          {% elif m < 0 and h < 0 %}takarekos
+          {% else %}kiegyensulyozott{% endif %}
+
+      - name: Deye fogyasztási ajánlás
+        unique_id: deye_fogyasztasi_ajanlas
+        icon: >
+          {{ {'most_tobblet':'mdi:flash-alert','ma_fogyassz':'mdi:washing-machine','holnapra_halaszd':'mdi:calendar-arrow-right',
+              'boseg':'mdi:white-balance-sunny','takarekos':'mdi:battery-alert'}.get(states('sensor.deye_ajanlas_kod'), 'mdi:scale-balance') }}
+        state: "{{ states('sensor.deye_ajanlas_kod') }}"
+        attributes:
+          cim: >
+            {{ {'most_tobblet':'⚡ Most kapcsolj be nagyfogyasztót!',
+                'ma_fogyassz':'☀️ Ma érdemes fogyasztani',
+                'holnapra_halaszd':'⏳ Halaszd holnapra',
+                'boseg':'🌞 Bőség ma és holnap is',
+                'takarekos':'🔋 Takarékos üzem javasolt',
+                'kiegyensulyozott':'⚖️ Kiegyensúlyozott nap'}.get(states('sensor.deye_ajanlas_kod'), 'Számolás…') }}
+          uzenet: >
+            {% set m = states('sensor.deye_mai_energiamerleg') | float(0) %}
+            {% set h = states('sensor.deye_holnapi_energiamerleg') | float(0) %}
+            {% set hol = states('sensor.deye_elorejelzes_holnap') | float(0) %}
+            {% set s = states('sensor.deye_ajanlas_kod') %}
+            {% if s == 'most_tobblet' %}Az akku tele, a napenergia most elveszne. Mosás, szárítás, bojler, autótöltés – most ingyen van.
+            {% elif s == 'ma_fogyassz' %}Ma kb. {{ m }} kWh többlet várható, holnap viszont kevés lesz a nap ({{ hol }} kWh). A nagy fogyasztókat ma használd!
+            {% elif s == 'holnapra_halaszd' %}Ma szűkös a napenergia (mérleg {{ m }} kWh), holnap bőséges lesz (+{{ h }} kWh). Mosást, szárítást, töltést tedd holnapra.
+            {% elif s == 'boseg' %}Ma +{{ m }} kWh, holnap +{{ h }} kWh többlet várható. Nyugodtan fogyassz.
+            {% elif s == 'takarekos' %}Ma ({{ m }} kWh) és holnap ({{ h }} kWh) is hiány várható. Kerüld a nagy fogyasztókat, hálózati töltés lehet szükséges.
+            {% else %}Ma {{ m }} kWh, holnap {{ h }} kWh a várható mérleg. Átlagos fogyasztás rendben van.{% endif %}
+          tipus: >
+            {{ {'most_tobblet':'success','ma_fogyassz':'success','boseg':'success',
+                'holnapra_halaszd':'warning','takarekos':'error'}.get(states('sensor.deye_ajanlas_kod'), 'info') }}
+
+  - binary_sensor:
+      # Off-grid: tele akkunál az inverter visszafogja a PV-t → az energia elveszik
+      - name: Deye napenergia többlet
+        unique_id: deye_napenergia_tobblet
+        icon: mdi:solar-power-variant
+        delay_on: "00:05:00"
+        delay_off: "00:10:00"
+        state: >
+          {{ states('sensor.deye_akku_soc') | float(0) >= 95
+             and states('sensor.deye_elorejelzes_most') | float(0)
+                 > states('sensor.deye_fogyasztas_teljesitmeny') | float(0) + 1000 }}
+
+
+################################################################################
+#  6. IDŐSZAKOS MÉRŐK (napi / heti / havi / éves)
+################################################################################
+utility_meter:
+  deye_termeles_napi: { name: Deye termelés napi, source: sensor.deye_termeles_osszesen, cycle: daily }
+  deye_termeles_heti: { name: Deye termelés heti, source: sensor.deye_termeles_osszesen, cycle: weekly }
+  deye_termeles_havi: { name: Deye termelés havi, source: sensor.deye_termeles_osszesen, cycle: monthly }
+  deye_termeles_eves: { name: Deye termelés éves, source: sensor.deye_termeles_osszesen, cycle: yearly }
+
+  deye_fogyasztas_napi: { name: Deye fogyasztás napi, source: sensor.deye_fogyasztas_osszesen, cycle: daily }
+  deye_fogyasztas_heti: { name: Deye fogyasztás heti, source: sensor.deye_fogyasztas_osszesen, cycle: weekly }
+  deye_fogyasztas_havi: { name: Deye fogyasztás havi, source: sensor.deye_fogyasztas_osszesen, cycle: monthly }
+  deye_fogyasztas_eves: { name: Deye fogyasztás éves, source: sensor.deye_fogyasztas_osszesen, cycle: yearly }
+
+  deye_vetel_napi: { name: Deye hálózati vétel napi, source: sensor.deye_halozati_vetel_osszesen, cycle: daily }
+  deye_vetel_heti: { name: Deye hálózati vétel heti, source: sensor.deye_halozati_vetel_osszesen, cycle: weekly }
+  deye_vetel_havi: { name: Deye hálózati vétel havi, source: sensor.deye_halozati_vetel_osszesen, cycle: monthly }
+  deye_vetel_eves: { name: Deye hálózati vétel éves, source: sensor.deye_halozati_vetel_osszesen, cycle: yearly }
+
+  deye_akku_toltes_napi: { name: Deye akku töltés napi, source: sensor.deye_akku_toltes_osszesen, cycle: daily }
+  deye_akku_merites_napi: { name: Deye akku merítés napi, source: sensor.deye_akku_merites_osszesen, cycle: daily }
+
+  deye_megtakaritas_napi: { name: Deye megtakarítás napi, source: sensor.deye_megtakaritas_osszesen, cycle: daily, net_consumption: true }
+  deye_megtakaritas_heti: { name: Deye megtakarítás heti, source: sensor.deye_megtakaritas_osszesen, cycle: weekly, net_consumption: true }
+  deye_megtakaritas_havi: { name: Deye megtakarítás havi, source: sensor.deye_megtakaritas_osszesen, cycle: monthly, net_consumption: true }
+  deye_megtakaritas_eves: { name: Deye megtakarítás éves, source: sensor.deye_megtakaritas_osszesen, cycle: yearly, net_consumption: true }
+
+  deye_koltseg_napi: { name: Deye hálózati költség napi, source: sensor.deye_halozati_koltseg_osszesen, cycle: daily }
+  deye_koltseg_heti: { name: Deye hálózati költség heti, source: sensor.deye_halozati_koltseg_osszesen, cycle: weekly }
+  deye_koltseg_havi: { name: Deye hálózati költség havi, source: sensor.deye_halozati_koltseg_osszesen, cycle: monthly }
+  deye_koltseg_eves: { name: Deye hálózati költség éves, source: sensor.deye_halozati_koltseg_osszesen, cycle: yearly }
+
+################################################################################
+#  7. AUTOMATIZMUSOK / ÉRTESÍTÉSEK
+#  ⚠️ notify.notify = minden eszköz. Saját telefonra: notify.mobile_app_<telefonod>
+################################################################################
+automation:
+  - id: deye_alapertekek
+    alias: "Deye – alapértékek első induláskor"
+    triggers:
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: state
+        entity_id: input_boolean.deye_alapertekek_beallitva
+        state: "off"
+    actions:
+      - delay: "00:00:20"
+      - action: input_number.set_value
+        target: { entity_id: input_number.deye_aramar_megtakaritas }
+        data: { value: 70.1 }
+      - action: input_number.set_value
+        target: { entity_id: input_number.deye_aramar_vetel }
+        data: { value: 36.0 }
+      - action: input_number.set_value
+        target: { entity_id: input_number.deye_akku_kapacitas }
+        data: { value: 15 }
+      - action: input_number.set_value
+        target: { entity_id: input_number.deye_akku_tartalek_soc }
+        data: { value: 10 }
+      - action: input_number.set_value
+        target: { entity_id: input_number.deye_ajanlas_kuszob }
+        data: { value: 3 }
+      - action: input_number.set_value
+        target: { entity_id: input_number.deye_ejszakai_arany }
+        data: { value: 35 }
+      - action: input_datetime.set_datetime
+        target: { entity_id: input_datetime.deye_reggeli_ertesites }
+        data: { time: "07:00:00" }
+      - action: input_datetime.set_datetime
+        target: { entity_id: input_datetime.deye_esti_ertesites }
+        data: { time: "20:00:00" }
+      - action: input_select.select_option
+        target: { entity_id: input_select.deye_idoszak }
+        data: { option: Hét }
+      - action: input_boolean.turn_on
+        target: { entity_id: [input_boolean.deye_ertesitesek, input_boolean.deye_alapertekek_beallitva] }
+
+  - id: deye_reggeli_ajanlas
+    alias: "Deye – reggeli energia-ajánlás"
+    triggers:
+      - trigger: time
+        at: input_datetime.deye_reggeli_ertesites
+    conditions:
+      - condition: state
+        entity_id: input_boolean.deye_ertesitesek
+        state: "on"
+    actions:
+      - action: notify.notify
+        data:
+          title: "{{ state_attr('sensor.deye_fogyasztasi_ajanlas', 'cim') }}"
+          message: >
+            {{ state_attr('sensor.deye_fogyasztasi_ajanlas', 'uzenet') }}
+            Ma {{ states('sensor.deye_elorejelzes_ma') }} kWh, holnap {{ states('sensor.deye_elorejelzes_holnap') }} kWh,
+            akku {{ states('sensor.deye_akku_soc') }} %.
+          data: { tag: deye_ajanlas, group: deye }
+
+  - id: deye_ajanlas_valtozas
+    alias: "Deye – ajánlás megváltozott napközben"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: sensor.deye_fogyasztasi_ajanlas
+        for: "00:20:00"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.deye_ertesitesek
+        state: "on"
+      - condition: time
+        after: "08:00:00"
+        before: "18:00:00"
+      - "{{ trigger.from_state.state not in ['unknown', 'unavailable', ''] }}"
+      - "{{ trigger.to_state.state in ['ma_fogyassz', 'holnapra_halaszd', 'takarekos', 'most_tobblet'] }}"
+    actions:
+      - action: notify.notify
+        data:
+          title: "{{ state_attr('sensor.deye_fogyasztasi_ajanlas', 'cim') }}"
+          message: "{{ state_attr('sensor.deye_fogyasztasi_ajanlas', 'uzenet') }}"
+          data: { tag: deye_ajanlas, group: deye }
+
+  - id: deye_esti_elorejelzes
+    alias: "Deye – esti holnapi előrejelzés"
+    triggers:
+      - trigger: time
+        at: input_datetime.deye_esti_ertesites
+    conditions:
+      - condition: state
+        entity_id: input_boolean.deye_ertesitesek
+        state: "on"
+    actions:
+      - action: notify.notify
+        data:
+          title: "🌤️ Holnap: {{ states('sensor.deye_elorejelzes_holnap') }} kWh napenergia"
+          message: >
+            {% set h = states('sensor.deye_holnapi_energiamerleg') | float(0) %}
+            Várható fogyasztás {{ states('sensor.deye_varhato_napi_fogyasztas') }} kWh →
+            {% if h >= 0 %}+{{ h }} kWh többlet, holnapra időzítheted a nagy fogyasztókat.
+            {% else %}{{ h }} kWh hiány, holnap spórolj.{% endif %}
+            Ma: termelés {{ states('sensor.deye_termeles_napi') | float(0) | round(1) }} kWh,
+            önellátás {{ states('sensor.deye_onellatas_napi') | float(0) | round(0) }} %,
+            megtakarítás {{ states('sensor.deye_megtakaritas_napi') | float(0) | round(0) | int }} Ft.
+          data: { tag: deye_esti, group: deye }
+
+  - id: deye_napenergia_tobblet
+    alias: "Deye – napenergia-többlet (akku tele)"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.deye_napenergia_tobblet
+        to: "on"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.deye_ertesitesek
+        state: "on"
+      - "{{ this.attributes.last_triggered is none or now() - this.attributes.last_triggered > timedelta(hours=3) }}"
+    actions:
+      - action: notify.notify
+        data:
+          title: "⚡ Ingyen energia most!"
+          message: >
+            Akku {{ states('sensor.deye_akku_soc') }} %, a napelem kb. {{ states('sensor.deye_elorejelzes_most') }} W-ot tudna,
+            fogyasztás csak {{ states('sensor.deye_fogyasztas_teljesitmeny') }} W. Kapcsolj be mosógépet, bojlert, töltőt!
+          data: { tag: deye_tobblet, group: deye }
+
+  - id: deye_akku_alacsony
+    alias: "Deye – akku alacsony"
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.deye_akku_soc
+        below: 20
+        for: "00:05:00"
+        id: alacsony
+      - trigger: numeric_state
+        entity_id: sensor.deye_akku_soc
+        below: 10
+        for: "00:02:00"
+        id: kritikus
+    conditions:
+      - condition: state
+        entity_id: input_boolean.deye_ertesitesek
+        state: "on"
+    actions:
+      - action: notify.notify
+        data:
+          title: "{{ '🪫 KRITIKUS akkuszint' if trigger.id == 'kritikus' else '🔋 Alacsony akkuszint' }}: {{ states('sensor.deye_akku_soc') }} %"
+          message: >
+            {{ state_attr('sensor.deye_akku_soc', 'allapot') }}. Fogyasztás most {{ states('sensor.deye_fogyasztas_teljesitmeny') }} W,
+            ma még {{ states('sensor.deye_elorejelzes_ma_hatralevo') }} kWh napenergia várható.
+          data:
+            tag: deye_akku
+            group: deye
+            push: { interruption-level: "{{ 'critical' if trigger.id == 'kritikus' else 'active' }}" }
+
+  - id: deye_inverter_hiba
+    alias: "Deye – inverter / akku hiba"
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id:
+          - sensor.fo_inverter_device_alarm
+          - sensor.fo_inverter_device_fault
+          - sensor.fo_inverter_battery_alarm
+          - sensor.fo_inverter_battery_fault
+          - sensor.inverter_2_device_alarm
+          - sensor.inverter_2_device_fault
+          - sensor.inverter_2_battery_alarm
+          - sensor.inverter_2_battery_fault
+        not_to: ["OK", "unknown", "unavailable"]
+        for: "00:01:00"
+    actions:
+      - action: notify.notify
+        data:
+          title: "🚨 Deye hiba: {{ state_attr(trigger.entity_id, 'friendly_name') }}"
+          message: "Állapot: {{ trigger.to_state.state }} ({{ now().strftime('%H:%M') }})"
+          data: { tag: "{{ trigger.entity_id }}", group: deye }

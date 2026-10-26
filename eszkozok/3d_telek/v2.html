@@ -1,0 +1,619 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}canvas{display:block}</style></head>
+<body><canvas id="c"></canvas>
+<script>
+// =====================================================================
+//  Mini deferred WebGL2 renderer – Deye off-grid ház (félbevágott, 3D)
+//  Koordináták: x,y = talaj, z = fel (méter)
+// =====================================================================
+const Q = new URLSearchParams(location.search);
+const MODE = Q.get('mode') || 'day';
+const NIGHT = MODE === 'night';
+const OUTW = 1600, OUTH = 1100;              // logikai (CSS) méret – erre vetítünk
+const SS = +(Q.get('ss') || 1.5);            // szuperszamplingolás
+const W = Math.round(OUTW * SS), H = Math.round(OUTH * SS);
+
+// ---------------- vektor / mátrix ----------------
+const V = {
+  add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]], sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],
+  mul:(a,s)=>[a[0]*s,a[1]*s,a[2]*s], dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],
+  len:a=>Math.hypot(a[0],a[1],a[2]), norm:a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return[a[0]/l,a[1]/l,a[2]/l]},
+};
+function mmul(a,b){const o=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+r]*b[c*4+k];o[c*4+r]=s;}return o;}
+function lookAt(e,t,u){const z=V.norm(V.sub(e,t)),x=V.norm(V.cross(u,z)),y=V.cross(z,x);
+  return new Float32Array([x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0, -V.dot(x,e),-V.dot(y,e),-V.dot(z,e),1]);}
+function persp(fov,asp,n,f){const t=1/Math.tan(fov/2);return new Float32Array([t/asp,0,0,0, 0,t,0,0, 0,0,(f+n)/(n-f),-1, 0,0,2*f*n/(n-f),0]);}
+function ortho(l,r,b,t,n,f){return new Float32Array([2/(r-l),0,0,0, 0,2/(t-b),0,0, 0,0,-2/(f-n),0, -(r+l)/(r-l),-(t+b)/(t-b),-(f+n)/(f-n),1]);}
+function xform(m,p){const x=p[0],y=p[1],z=p[2];const w=m[3]*x+m[7]*y+m[11]*z+m[15];
+  return [(m[0]*x+m[4]*y+m[8]*z+m[12])/w,(m[1]*x+m[5]*y+m[9]*z+m[13])/w,(m[2]*x+m[6]*y+m[10]*z+m[14])/w];}
+const hex = h => { const n=parseInt(h.slice(1),16); return [((n>>16)&255)/255,((n>>8)&255)/255,(n&255)/255].map(c=>Math.pow(c,2.2)); };
+
+// ---------------- geometria puffer ----------------
+// vertex: pos3 nrm3 uv2 alb3 emi3 mat2(type, rough) = 16 float
+const VB = [];
+// anyagtípusok: 0 sima, 1 cserép, 2 napelem, 3 parketta, 4 fű, 5 garázskapu, 6 üveg, 7 térkő, 8 fém
+function M(color, o={}) { return {alb:hex(color), emi:o.emi?V.mul(hex(o.emi),o.ei??1):[0,0,0], type:o.type??0, rough:o.rough??0.75}; }
+function vert(p,n,uv,m){ VB.push(p[0],p[1],p[2],n[0],n[1],n[2],uv[0],uv[1],m.alb[0],m.alb[1],m.alb[2],m.emi[0],m.emi[1],m.emi[2],m.type,m.rough); }
+function tri(a,b,c,na,nb,nc,ua,ub,uc,m){ vert(a,na,ua,m);vert(b,nb,ub,m);vert(c,nc,uc,m); }
+function quad(a,b,c,d,n,m,uv){ uv=uv||[[0,0],[1,0],[1,1],[0,1]]; tri(a,b,c,n,n,n,uv[0],uv[1],uv[2],m); tri(a,c,d,n,n,n,uv[0],uv[2],uv[3],m); }
+
+// orientált téglatest: c középpont, a,b,w egységvektorok, ha,hb,hw fél-méretek; faceMat: {top:..}
+function obox(c,a,b,w,ha,hb,hw,m,faceMat={}) {
+  const F = [ [w,a,b,ha,hb,hw,'top'], [V.mul(w,-1),b,a,hb,ha,hw,'bot'], [a,b,w,hb,hw,ha,'a+'], [V.mul(a,-1),w,b,hw,hb,ha,'a-'], [b,w,a,hw,ha,hb,'b+'], [V.mul(b,-1),a,w,ha,hw,hb,'b-'] ];
+  for (const [n,u,v,hu,hv,hn,key] of F) {
+    const o = V.add(c, V.mul(n,hn)); const mm = faceMat[key] || m;
+    const p = (s,t)=>V.add(o,V.add(V.mul(u,s*hu),V.mul(v,t*hv)));
+    quad(p(-1,-1),p(1,-1),p(1,1),p(-1,1), n, mm, [[0,0],[2*hu,0],[2*hu,2*hv],[0,2*hv]]);
+  }
+}
+// tengelyhez igazított doboz (lekerekített élekkel ha r>0)
+function box(x0,x1,y0,y1,z0,z1,m,r=0,faceMat={}) {
+  const c=[(x0+x1)/2,(y0+y1)/2,(z0+z1)/2], h=[(x1-x0)/2,(y1-y0)/2,(z1-z0)/2];
+  if (r<=0) return obox(c,[1,0,0],[0,1,0],[0,0,1],h[0],h[1],h[2],m,{top:faceMat.top,'a+':faceMat.xp,'b+':faceMat.yp});
+  r = Math.min(r, h[0]*0.95, h[1]*0.95, h[2]*0.95);
+  const K=4;
+  const axisPts = hh => { const a=[-hh]; for(let i=1;i<=K;i++) a.push(-hh+r-r*Math.cos(i/K*Math.PI/2)); a.push(hh-r); for(let i=K-1;i>=0;i--) a.push(hh-r+r*Math.cos(i/K*Math.PI/2)); a.push(hh); return [...new Set(a.map(v=>+v.toFixed(6)))].sort((p,q)=>p-q); };
+  const ax=[axisPts(h[0]),axisPts(h[1]),axisPts(h[2])];
+  const faces=[[2,1,0,1],[2,-1,1,0],[0,1,1,2],[0,-1,2,1],[1,1,2,0],[1,-1,0,2]]; // [normál tengely, előjel, u tengely, v tengely]
+  const fkey={ '2,1':'top','0,1':'xp','1,1':'yp' };
+  for (const [nA,sg,uA,vA] of faces) {
+    const mm = faceMat[fkey[nA+','+sg]] || m;
+    const us=ax[uA], vs=ax[vA];
+    const P=(i,j)=>{ const q=[0,0,0]; q[nA]=sg*h[nA]; q[uA]=us[i]; q[vA]=vs[j];
+      const inner=q.map((v,k)=>Math.max(-h[k]+r,Math.min(h[k]-r,v)));
+      let n=V.sub(q,inner); const L=V.len(n); if (L<1e-6){ n=[0,0,0]; n[nA]=sg; } else n=V.mul(n,1/L);
+      const pos=V.add(inner,V.mul(n,r)); return {p:V.add(pos,c), n, uv:[us[i]+h[uA], vs[j]+h[vA]]}; };
+    for (let i=0;i<us.length-1;i++) for (let j=0;j<vs.length-1;j++) {
+      const a=P(i,j),b=P(i+1,j),cc=P(i+1,j+1),d=P(i,j+1);
+      // irány: u×v ~ n
+      const flip = V.dot(V.cross(V.sub(b.p,a.p),V.sub(d.p,a.p)), (()=>{const t=[0,0,0];t[nA]=sg;return t;})()) < 0;
+      if (!flip) { tri(a.p,b.p,cc.p,a.n,b.n,cc.n,a.uv,b.uv,cc.uv,mm); tri(a.p,cc.p,d.p,a.n,cc.n,d.n,a.uv,cc.uv,d.uv,mm); }
+      else { tri(a.p,cc.p,b.p,a.n,cc.n,b.n,a.uv,cc.uv,b.uv,mm); tri(a.p,d.p,cc.p,a.n,d.n,cc.n,a.uv,d.uv,cc.uv,mm); }
+    }
+  }
+}
+function cyl(base,axis,rad,len,m,seg=28,caps=true,capMat=null) {
+  axis=V.norm(axis); const t=Math.abs(axis[2])<0.9?[0,0,1]:[1,0,0]; const u=V.norm(V.cross(axis,t)), v=V.cross(axis,u);
+  const top=V.add(base,V.mul(axis,len));
+  for (let i=0;i<seg;i++){ const a0=i/seg*2*Math.PI, a1=(i+1)/seg*2*Math.PI;
+    const n0=V.add(V.mul(u,Math.cos(a0)),V.mul(v,Math.sin(a0))), n1=V.add(V.mul(u,Math.cos(a1)),V.mul(v,Math.sin(a1)));
+    const p0=V.add(base,V.mul(n0,rad)),p1=V.add(base,V.mul(n1,rad)),p2=V.add(top,V.mul(n1,rad)),p3=V.add(top,V.mul(n0,rad));
+    tri(p0,p1,p2,n0,n1,n1,[0,0],[1,0],[1,1],m); tri(p0,p2,p3,n0,n1,n0,[0,0],[1,1],[0,1],m);
+    if (caps){ const cm=capMat||m; tri(top,p3,p2,axis,axis,axis,[0,0],[0,0],[0,0],cm); const na=V.mul(axis,-1); tri(base,p1,p0,na,na,na,[0,0],[0,0],[0,0],cm); }
+  }
+}
+function _h3(x,y,z){ let n = Math.sin(x*127.1+y*311.7+z*74.7)*43758.5453; return n-Math.floor(n); }
+function noise3(x,y,z){ const xi=Math.floor(x),yi=Math.floor(y),zi=Math.floor(z),xf=x-xi,yf=y-yi,zf=z-zi; const f=t=>t*t*(3-2*t);
+  const u=f(xf),v=f(yf),w=f(zf); const L=(a,b,t)=>a+(b-a)*t; const h=(a,b,c)=>_h3(xi+a,yi+b,zi+c);
+  return L(L(L(h(0,0,0),h(1,0,0),u),L(h(0,1,0),h(1,1,0),u),v),L(L(h(0,0,1),h(1,0,1),u),L(h(0,1,1),h(1,1,1),u),v),w); }
+function sphere(c,r,m,seg=18,sz=1,jit=0) {
+  const disp=(n)=> jit ? 1 + jit*(noise3(c[0]*0.7+n[0]*2.2, c[1]*0.7+n[1]*2.2, n[2]*2.2)*1.4-0.7 + (noise3(n[0]*5.5+c[0],n[1]*5.5,n[2]*5.5)-0.5)*0.6) : 1;
+  const P=(i,j)=>{const th=i/seg*Math.PI, ph=j/(2*seg)*2*Math.PI; const n=[Math.sin(th)*Math.cos(ph),Math.sin(th)*Math.sin(ph),Math.cos(th)]; const k=disp(n);
+    return {p:V.add(c,[n[0]*r*k,n[1]*r*k,n[2]*r*sz*k]), n:V.norm([n[0],n[1],n[2]/sz])};};
+  if (jit) { // simított normálok a deformált felülethez: numerikus becslés
+    const Pn=(i,j)=>{ const a=P(i,j), b=P(i+0.5,j), d=P(i,j+0.5); let nn=V.norm(V.cross(V.sub(b.p,a.p),V.sub(d.p,a.p))); if (V.dot(nn,a.n)<0) nn=V.mul(nn,-1); return {p:a.p, n:V.norm(V.add(V.mul(nn,0.6),V.mul(a.n,0.4)))}; };
+    for(let i=0;i<seg;i++)for(let j=0;j<2*seg;j++){const a=Pn(i,j),b=Pn(i+1,j),d=Pn(i+1,j+1),e=Pn(i,j+1);
+      tri(a.p,b.p,d.p,a.n,b.n,d.n,[0,0],[0,0],[0,0],m); tri(a.p,d.p,e.p,a.n,d.n,e.n,[0,0],[0,0],[0,0],m);} return; }
+  for(let i=0;i<seg;i++)for(let j=0;j<2*seg;j++){const a=P(i,j),b=P(i+1,j),d=P(i+1,j+1),e=P(i,j+1);
+    tri(a.p,b.p,d.p,a.n,b.n,d.n,[0,0],[0,0],[0,0],m); tri(a.p,d.p,e.p,a.n,d.n,e.n,[0,0],[0,0],[0,0],m);}
+}
+function tube(pts,rad,m,seg=8){ for(let k=0;k<pts.length-1;k++) cyl(pts[k],V.sub(pts[k+1],pts[k]),rad,V.len(V.sub(pts[k+1],pts[k])),m,seg,false); }
+// oromfal: háromszög hasáb az x tengely mentén
+function gable(x0,x1,y0,y1,z0,z1,m) {
+  const A=(x)=>[[x,y0,z0],[x,y1,z0],[x,y1,z1]];
+  const a=A(x0), b=A(x1);
+  tri(a[0],a[2],a[1],[-1,0,0],[-1,0,0],[-1,0,0],[0,0],[0,1],[1,0],m);
+  tri(b[0],b[1],b[2],[1,0,0],[1,0,0],[1,0,0],[0,0],[1,0],[0,1],m);
+  const sides=[[0,1],[1,2],[2,0]];
+  for(const [i,j] of sides){ const n=V.norm(V.cross(V.sub(a[j],a[i]),[1,0,0])); quad(a[i],a[j],b[j],b[i],V.mul(n,-1),m); }
+}
+
+// oromfal y irányban extrudálva: háromszög (x0,z0)-(x1,z0)-(xm,z1)
+function gableY(y0,y1,x0,x1,xm,z0,z1,m){
+  const A=y=>[[x0,y,z0],[x1,y,z0],[xm,y,z1]]; const a=A(y0), b=A(y1);
+  tri(a[0],a[2],a[1],[0,-1,0],[0,-1,0],[0,-1,0],[0,0],[0,1],[1,0],m);
+  tri(b[0],b[1],b[2],[0,1,0],[0,1,0],[0,1,0],[0,0],[1,0],[0,1],m);
+  for(const [i,j] of [[0,1],[1,2],[2,0]]){ const n=V.norm(V.cross([0,1,0],V.sub(a[j],a[i]))); quad(a[i],a[j],b[j],b[i],V.mul(n,-1),m); }
+}
+// =====================================================================
+//  JELENET v2 – a fotók alapján (méterben). x = u (ház hossztengelye, utca → udvar), y = v (+ = udvar/bejáró felé), z = fel
+// =====================================================================
+const AZ_U = 62.7, AZ_V = 152.7;
+const D = !NIGHT;
+const C = {
+  grass: D?'#557D37':'#2F4F2A', soil:'#4A3A2C', gravel: D?'#BFB6A3':'#77746C', curb: D?'#B9B6AE':'#6A6862', concrete: D?'#C8C4BB':'#6E6C67',
+  wall: D?'#E3C493':'#B49B74', plinth: D?'#8F8A82':'#5E5B57', roof: D?'#8C4A34':'#5A3024', brick: D?'#A4553A':'#6E3A2A',
+  g3wall: D?'#EFE6D2':'#A8A090', maroon: D?'#7A2E2A':'#4E1E1C', g4wall: D?'#F2F0EA':'#A7A6A2', terra: D?'#A5603C':'#6A3E28',
+  eternit: D?'#8E877A':'#55524B', fascia:'#22252B',
+};
+const mat = {
+  grass:M(C.grass,{type:4,rough:0.95}), soil:M(C.soil,{rough:1}), gravel:M(C.gravel,{type:10,rough:1}), curb:M(C.curb,{rough:0.9}),
+  concrete:M(C.concrete,{rough:0.9}), wall:M(C.wall,{rough:0.9}), plinth:M(C.plinth,{rough:0.9}), roofH:M(C.roof,{type:1,rough:0.7}),
+  brick:M(C.brick,{rough:0.9}), g3wall:M(C.g3wall,{rough:0.85}), maroon:M(C.maroon,{rough:0.8}), g4wall:M(C.g4wall,{rough:0.9}),
+  terra:M(C.terra,{rough:0.9}), eternit:M(C.eternit,{type:11,rough:0.7}), fascia:M(C.fascia,{rough:0.5}), cut:M(D?'#9C958A':'#5B5853',{rough:0.9}),
+  panel:M('#1B2A55',{type:2,rough:0.2}), frame:M(D?'#C9CED6':'#8C939E',{type:8,rough:0.35}), panelBack:M(D?'#ECEEF0':'#9EA2A8',{rough:0.6}),
+  metal:M('#8D96A6',{type:8,rough:0.35}), dark:M('#1A2030',{rough:0.3}),
+  glass:M('#2B3B55',{type:6,rough:0.05}), win:M('#FFD58A',{emi:'#FFC46B',ei:NIGHT?3.0:0,type:6,rough:0.1}),
+  winFrame:M(D?'#FFFFFF':'#A9ADB3',{rough:0.5}), shutter:M(D?'#F4F4F2':'#A3A5A8',{type:5,rough:0.6}),
+  awning:M(D?'#CDB995':'#7C6E58',{rough:0.9}), rail:M(D?'#4A2E22':'#2E1D16',{rough:0.7}), deck:M(D?'#8C6A50':'#4E3B2C',{type:3,rough:0.7}),
+  flowerBox:M('#2F5E3E',{rough:0.7}), red:M('#D2302C',{rough:0.7}), white:M('#F7F8FA',{rough:0.45}),
+  screen:M('#2A9FE0',{emi:'#45B8F5',ei:NIGHT?2.5:1.4,rough:0.2}), led:M('#2BD86B',{emi:'#2BD86B',ei:NIGHT?3:1.8}),
+  batt:M('#E8EBEF',{rough:0.4}), battDark:M('#58627A',{rough:0.5}),
+  garDoor:M(D?'#5A3324':'#3A2118',{type:5,rough:0.5}), brownDoor:M(D?'#6B2A22':'#40191A',{rough:0.5}),
+  green4:M(D?'#2F5A48':'#1E3A2F',{rough:0.6}), fence:M(D?'#1F6A40':'#14402A',{rough:0.5}), gateGreen:M(D?'#2DBE8C':'#1A6A50',{rough:0.6}),
+  leafA:M(D?'#2C5527':'#1A3420',{type:9,rough:0.9}), leafB:M(D?'#3A6630':'#21401F',{type:9,rough:0.9}),
+  leafC:M(D?'#6E8A3A':'#2E4522',{type:9,rough:0.9}), leafD:M(D?'#1F4224':'#152A1A',{type:9,rough:0.9}),
+  leafY:M(D?'#9AA640':'#3E4824',{type:9,rough:0.9}), thuja:M(D?'#4F7A2C':'#22391A',{type:9,rough:0.9}),
+  hedge:M(D?'#2D5A28':'#1C381D',{type:9,rough:0.95}), trunk:M('#5E4632',{rough:0.9}),
+  camper:M(D?'#F2F3F5':'#B9BEC6',{rough:0.25}), carGlass:M('#1A2232',{type:6,rough:0.05}), tire:M('#16181D',{rough:0.9}), rim:M('#B9C0CA',{type:8,rough:0.3}),
+  lamp:M('#FFFFFF',{emi:'#FFFFFF',ei:NIGHT?3:0.4}), cable:M('#2B3038',{rough:0.6}), pole:M(D?'#8E877C':'#6F6A62',{rough:0.8}),
+  fairy:M('#FFE9B0',{emi:'#FFD98A',ei:NIGHT?6:0}), wood:M(D?'#8A6A4C':'#4E3B2C',{rough:0.8}), blue:M('#2F62C8',{rough:0.6}),
+};
+let _sd = 24680; const rnd = () => { _sd = (_sd * 16807) % 2147483647; return _sd / 2147483647; };
+const UP=[0,0,1];
+
+// kontyolt (sátor) tető: alap téglalap z0-n, gerinc hossza a hosszabbik tengely mentén
+function hipRoof(x0,x1,y0,y1,z0,h,m) {
+  const cx=(x0+x1)/2, cy=(y0+y1)/2, lx=x1-x0, ly=y1-y0;
+  let r0, r1; if (lx>=ly){ const d=ly/2; r0=[x0+d,cy,z0+h]; r1=[x1-d,cy,z0+h]; } else { const d=lx/2; r0=[cx,y0+d,z0+h]; r1=[cx,y1-d,z0+h]; }
+  const A=[x0,y0,z0],B=[x1,y0,z0],Cc=[x1,y1,z0],D=[x0,y1,z0];
+  const face=(p,mm)=>{ const n=V.norm(V.cross(V.sub(p[1],p[0]),V.sub(p[2],p[0]))); const nn = n[2]<0?V.mul(n,-1):n;
+    const e=V.norm(V.sub(p[1],p[0])), f=V.cross(nn,e); const uvp=q=>[V.dot(V.sub(q,p[0]),e), V.dot(V.sub(q,p[0]),f)];
+    for(let i=1;i<p.length-1;i++) tri(p[0],p[i],p[i+1],nn,nn,nn,uvp(p[0]),uvp(p[i]),uvp(p[i+1]),mm); };
+  if (lx>=ly){ face([A,B,r1,r0],m); face([Cc,D,r0,r1],m); face([B,Cc,r1],m); face([D,A,r0],m); }
+  else { face([B,Cc,r1,r0],m); face([D,A,r0,r1],m); face([A,B,r0],m); face([Cc,D,r1],m); }
+}
+// egyenlő szárú oromfal x irányban extrudálva: (y0,z0)-(y1,z0)-(ym,z1)
+function gableX(x0,x1,y0,y1,z0,z1,m){
+  const ym=(y0+y1)/2, A=x=>[[x,y0,z0],[x,y1,z0],[x,ym,z1]]; const a=A(x0), b=A(x1);
+  tri(a[0],a[1],a[2],[-1,0,0],[-1,0,0],[-1,0,0],[0,0],[1,0],[0.5,1],m);
+  tri(b[0],b[2],b[1],[1,0,0],[1,0,0],[1,0,0],[0,0],[0.5,1],[1,0],m);
+}
+// nyeregtető: gerinc az x tengely mentén, y0..y1 között, ereszmagasság z0, gerinc z1; túlnyúlás ov
+function gableRoofX(x0,x1,y0,y1,z0,z1,m,ov=0.4){
+  const ym=(y0+y1)/2, run=(y1-y0)/2+ov, rise=(z1-z0)*(run/((y1-y0)/2));
+  for (const s of [-1,1]) {
+    const sd=V.norm([0,s*run,-rise]), nn=V.norm([0,s*rise,run]); const sl=Math.hypot(run,rise);
+    const c=V.add([(x0+x1)/2, ym, z1], V.mul(sd, sl/2));
+    obox(V.sub(c,V.mul(nn,0.08)),[1,0,0],sd,nn,(x1-x0)/2+ov,sl/2,0.08,m,{'a+':mat.plinth,'a-':mat.plinth,'b+':mat.plinth,'b-':mat.plinth});
+  }
+  for (const x of [x0,x1]) gableX(x-0.01, x+0.01, y0, y1, z0, z1, mat.wall);
+}
+function gableRoofY(x0,x1,y0,y1,z0,z1,m,ov=0.4){
+  const xm=(x0+x1)/2, run=(x1-x0)/2+ov, rise=(z1-z0)*(run/((x1-x0)/2));
+  for (const s of [-1,1]) {
+    const sd=V.norm([s*run,0,-rise]), nn=V.norm([s*rise,0,run]); const sl=Math.hypot(run,rise);
+    const c=V.add([xm,(y0+y1)/2,z1], V.mul(sd, sl/2));
+    obox(V.sub(c,V.mul(nn,0.08)),[0,1,0],sd,nn,(y1-y0)/2+ov,sl/2,0.08,m,{'a+':mat.plinth,'a-':mat.plinth,'b+':mat.plinth,'b-':mat.plinth});
+  }
+  for (const y of [y0,y1]) gableY(y-0.01,y+0.01,x0,x1,xm,z0,z1,mat.wall);
+}
+// napelem tömb egy síkon: o sarok, a (szélesség irány), b (lejtés irány), n normál
+function panelArray(o,a,b,n,cols,rows,gap=0.04){
+  const pw=1.13, ph=1.72;
+  for(let i=0;i<cols;i++) for(let j=0;j<rows;j++){
+    const c=V.add(V.add(V.add(o,V.mul(a,i*(pw+gap)+pw/2)),V.mul(b,j*(ph+gap)+ph/2)),V.mul(n,0.12));
+    obox(c,a,b,n,pw/2,ph/2,0.035,mat.frame,{top:mat.panel});
+  }
+}
+// ablak egy falon: c = fal felszíni középpont, n = kifelé mutató normál, t = vízszintes tangens
+function winOn(c, n, t, w, h, shutterDown=0.35) {
+  obox(V.add(c,V.mul(n,0.03)), t, UP, n, w/2+0.08, h/2+0.08, 0.03, mat.winFrame);
+  obox(V.add(c,V.mul(n,0.065)), t, UP, n, w/2, h/2, 0.006, NIGHT?mat.win:mat.glass);
+  obox(V.add(c,V.mul(n,0.075)), t, UP, n, 0.03, h/2, 0.006, mat.winFrame);
+  obox(V.add(V.add(c,V.mul(n,0.08)),V.mul(UP,h/2+0.17)), t, UP, n, w/2+0.1, 0.13, 0.08, mat.winFrame);
+  if (shutterDown>0) obox(V.add(V.add(c,V.mul(n,0.085)),V.mul(UP,h/2-h*shutterDown/2)), t, UP, n, w/2, h*shutterDown/2, 0.008, mat.shutter);
+}
+function landscapeArray(o, a, b, n, cols, m=mat.panelBack, gap=0.04){   // a: vízszintes, b: lejtés; panelek fekvő állásban
+  for (let i=0;i<cols;i++){ const c=V.add(V.add(V.add(o,V.mul(a,i*(1.72+gap)+0.86)),V.mul(b,0.565)),V.mul(n,0.12));
+    obox(c, b, a, n, 0.565, 0.86, 0.035, m, {top:mat.panel}); }
+}
+function portraitArray(o, a, b, n, cols, rows, m=mat.frame, gap=0.04){
+  for (let i=0;i<cols;i++) for (let j=0;j<rows;j++){ const c=V.add(V.add(V.add(o,V.mul(a,i*(1.13+gap)+0.565)),V.mul(b,j*(1.72+gap)+0.86)),V.mul(n,0.12));
+    obox(c, a, b, n, 0.565, 0.86, 0.035, m, {top:mat.panel}); }
+}
+function tree(x,y,h,r,kind=0){
+  const pal = kind===3 ? [mat.leafC,mat.leafY,mat.leafB,mat.leafC] : [mat.leafA,mat.leafB,mat.leafC,mat.leafD];
+  cyl([x,y,0],[0,0,1],Math.max(0.12,r*0.08),h*0.5,mat.trunk,8,false);
+  if (kind===1) { const lv=6; for(let i=0;i<lv;i++){ const t=i/lv; sphere([x+(rnd()-0.5)*0.25,y+(rnd()-0.5)*0.25,h*(0.22+0.72*t)], r*(1.05-0.8*t), pal[i%4], 12, 0.5, 0.28); } }
+  else { const k=10+Math.floor(rnd()*5);
+    for(let i=0;i<k;i++){ const a=rnd()*6.283, d=r*0.62*Math.sqrt(rnd()), zz=h*(0.52+0.38*rnd());
+      sphere([x+Math.cos(a)*d, y+Math.sin(a)*d, zz], r*(0.36+0.3*rnd()), pal[Math.floor(rnd()*4)], 12, 0.78, 0.32); } }
+}
+function column(x,y,h,r,m=mat.thuja){ sphere([x,y,h*0.5], r, m, 14, h/(2*r)*0.95, 0.18); }
+function thuja(x,y,h,r){ const lv=7; for(let i=0;i<lv;i++){ const t=i/lv; sphere([x,y,h*(0.12+0.8*t)], r*(1.0-0.78*t), i%2?mat.thuja:mat.leafB, 14, 0.7, 0.22); } }
+function hedgeLine(p0,p1,w,h){ const L=V.len(V.sub(p1,p0)); const n=Math.max(1,Math.round(L/0.8));
+  for(let i=0;i<=n;i++){ const t=i/n; const p=V.add(p0,V.mul(V.sub(p1,p0),t));
+    sphere([p[0]+(rnd()-0.5)*0.3,p[1]+(rnd()-0.5)*0.3,h*0.55], w*(0.8+0.3*rnd()), [mat.hedge,mat.leafB,mat.leafA][i%3], 10, h/w*0.65, 0.25); } }
+// zöld táblás kerítés p0→p1 (vízszintes), h magas
+function panelFence(p0,p1,h=1.25,m=mat.fence){
+  const d=V.sub(p1,p0), L=V.len(d), t=V.norm(d), n=V.norm(V.cross(UP,t));
+  const np=Math.max(1,Math.round(L/2.5));
+  for(let i=0;i<=np;i++){ const p=V.add(p0,V.mul(t,L*i/np)); obox(V.add(p,[0,0,(h+0.1)/2]), t, n, UP, 0.04, 0.04, (h+0.1)/2, m); }
+  for(const z of [0.1, h*0.33, h*0.66, h]) obox(V.add(V.add(p0,V.mul(t,L/2)),[0,0,z]), t, n, UP, L/2, 0.012, 0.012, m);
+  const nv=Math.round(L/0.22); for(let i=0;i<=nv;i++){ const p=V.add(p0,V.mul(t,L*i/nv)); obox(V.add(p,[0,0,h/2+0.05]), t, n, UP, 0.008, 0.008, h/2-0.03, m); }
+}
+function chainFence(p0,p1,h=1.5){ const d=V.sub(p1,p0), L=V.len(d), t=V.norm(d), n=V.norm(V.cross(UP,t)); const np=Math.max(1,Math.round(L/2.5));
+  for(let i=0;i<=np;i++){ const p=V.add(p0,V.mul(t,L*i/np)); cyl(p,UP,0.03,h,mat.dark,8,false); }
+  for(const z of [0.05,h*0.5,h]) obox(V.add(V.add(p0,V.mul(t,L/2)),[0,0,z]), t, n, UP, L/2, 0.008, 0.008, mat.dark);
+  const nv=Math.round(L/0.12); for(let i=0;i<=nv;i++){ const p=V.add(p0,V.mul(t,L*i/nv)); obox(V.add(p,[0,0,h/2]), V.norm(V.add(t,[0,0,1])), n, V.norm(V.cross(V.norm(V.add(t,[0,0,1])),n)), 0.004, 0.004, h/2*1.0, mat.dark); }
+}
+
+function buildScene() {
+  const X0=-9.5, X1=53, Y0=-19, Y1=14.5;
+  // ---------------- SZIGET, TALAJ ----------------
+  box(X0, X1, Y0, Y1, -1.6, -0.05, mat.soil, 0.9);
+  box(X0+0.15, X1-0.15, Y0+0.15, Y1-0.15, -0.25, 0.0, mat.grass, 0.4, {top:mat.grass});
+  box(X0+0.2, 20.0, 3.6, 8.2, 0.0, 0.06, mat.gravel, 0.05);                      // kavicsos bejáró
+  box(X0+0.2, 20.0, 3.45, 3.6, 0.0, 0.16, mat.curb, 0.02); box(X0+0.2, 20.0, 8.2, 8.35, 0.0, 0.16, mat.curb, 0.02);
+  box(18.0, 40.3, -1.25, 8.8, 0.0, 0.06, mat.gravel, 0.1);                        // udvar
+  box(19.5, 28.0, 8.2, 11.4, 0.0, 0.06, mat.gravel, 0.1);
+  box(17.5, 33.0, -1.25, -0.35, 0.0, 0.09, mat.concrete, 0.03);                   // járda a garázs 3 előtt
+  box(38.5, 40.3, -2.2, 2.2, 0.0, 0.09, mat.concrete, 0.03);                      // beton a garázs 4 előtt
+
+  // ---------------- FŐ HÁZ (u 0..17.5, v -9.6..0) ----------------
+  box(-0.05, 17.55, -9.65, 0.05, 0.0, 0.7, mat.plinth, 0.02);
+  box(0.0, 17.5, -9.6, 0.0, 0.7, 3.0, mat.wall, 0.02);
+  gableRoofX(0.0, 17.5, -9.6, 0.0, 3.0, 7.6, mat.roofH, 0.45);
+  // utcai oromfal: 2 ablak, padlásszellőzők, klíma
+  winOn([0,-7.2,1.75],[-1,0,0],[0,1,0],1.15,1.3); winOn([0,-3.4,1.75],[-1,0,0],[0,1,0],1.15,1.3);
+  box(-0.06,0.0,-5.15,-5.0,4.4,5.4,mat.dark); box(-0.06,0.0,-4.6,-4.45,4.4,5.4,mat.dark);
+  box(-0.4,0.0,-1.95,-1.05,0.85,1.5,mat.white,0.04); cyl([-0.41,-1.5,1.17],[-1,0,0],0.24,0.02,mat.dark,24); cyl([-0.43,-1.5,1.17],[-1,0,0],0.05,0.02,mat.metal,12);
+  // kémények
+  box(5.0,5.6,-5.2,-4.6,6.6,8.4,mat.brick,0.02); box(4.92,5.68,-5.28,-4.52,8.4,8.52,mat.plinth,0.02);
+  box(10.4,11.0,-4.4,-3.8,6.4,8.1,mat.brick,0.02); box(10.32,11.08,-4.48,-3.72,8.1,8.22,mat.plinth,0.02);
+  box(17.55,18.2,-9.2,-8.5,2.8,8.9,mat.brick,0.02); box(17.5,18.25,-9.25,-8.45,8.9,9.0,mat.plinth,0.02);
+  // tetősík (udvar felőli): gerinc [*, -4.8, 7.6], lejtés s, normál nn
+  const run=5.25, rise=(7.6-3.0)*(run/4.8), sl=Math.hypot(run,rise);
+  const s=V.norm([0,run,-rise]), nn=V.norm([0,rise,run]); const RP=(u,d)=>V.add([u,-4.8,7.6],V.mul(s,d));
+  portraitArray(RP(0.9,3.3),[1,0,0],s,nn,14,1);                                    // 4,9 kW sor: 14 panel
+  obox(V.add(RP(4.6,1.7),V.mul(nn,0.08)),[1,0,0],s,nn,0.42,0.58,0.07,mat.winFrame,{top:mat.glass});   // tetőablak
+  cyl([-0.5,0.5,2.52],[1,0,0],0.08,18.5,mat.plinth,10);                           // eresz
+  // udvari homlokzat (v = 0) – terasz mögött
+  winOn([1.9,0,1.75],[0,1,0],[1,0,0],1.0,1.3,0.25);
+  obox([3.7,0.04,1.6],[1,0,0],UP,[0,1,0],0.5,1.05,0.04,mat.winFrame); obox([3.7,0.09,1.7],[1,0,0],UP,[0,1,0],0.25,0.55,0.01,mat.glass);
+  winOn([5.3,0,1.75],[0,1,0],[1,0,0],0.8,1.3,0.0); winOn([6.8,0,1.9],[0,1,0],[1,0,0],0.8,1.5,0.35);
+  winOn([10.2,0,1.85],[0,1,0],[1,0,0],1.2,1.35,0.3);
+  winOn([13.6,0,1.85],[0,1,0],[1,0,0],1.6,1.3,0.3); winOn([16.3,0,1.85],[0,1,0],[1,0,0],0.7,1.2,0.3);
+  box(14.9,15.8,0.0,0.35,2.15,2.75,mat.white,0.04);                               // klíma
+  // terasz: emelt padló, korlát, virágládák, napellenző, lépcső
+  box(0.6, 11.8, 0.0, 2.5, 0.0, 0.75, mat.plinth, 0.02, {top:mat.deck});
+  for (let x=0.7; x<11.75; x+=0.19) box(x, x+0.08, 2.38, 2.46, 0.75, 1.62, mat.rail);
+  for (let y=0.1; y<2.4; y+=0.19) box(0.62, 0.7, y, y+0.08, 0.75, 1.62, mat.rail);
+  box(0.6, 11.8, 2.34, 2.5, 1.55, 1.66, mat.rail, 0.02); box(0.6, 11.8, 2.34, 2.5, 0.9, 0.98, mat.rail);
+  for (let x=1.2; x<11.0; x+=1.6) { box(x, x+0.9, 2.28, 2.56, 1.66, 1.84, mat.flowerBox, 0.03);
+    for (let k=0;k<4;k++) sphere([x+0.12+k*0.22, 2.42, 1.95], 0.12, k%2?mat.red:mat.leafB, 8); }
+  box(11.8,12.9,0.9,2.5,0.0,0.25,mat.plinth,0.02); box(11.8,12.5,0.9,2.5,0.25,0.5,mat.plinth,0.02);
+  for (const x of [0.9, 4.5, 8.1, 11.6]) box(x-0.04, x+0.04, 2.56, 2.64, 0.75, 2.5, mat.rail);
+  obox([6.2, 1.36, 2.66],[1,0,0],V.norm([0,2.75,-0.42]),V.norm([0,0.42,2.75]),5.8,1.39,0.02,mat.awning);
+  for (let x=0.6; x<11.8; x+=0.32) { sphere([x, 2.72, 2.42 - (Math.round(x/0.32)%3)*0.12], 0.035, mat.fairy, 4); }
+  // ciprusok a terasz előtt, nagy tuja a sarkon
+  for (const x of [2.2, 4.6, 7.0, 9.4, 13.6, 15.8, 17.6]) column(x, 3.05, 1.7+rnd()*0.5, 0.33);
+  thuja(-0.4, 2.0, 6.4, 2.1);
+  // ---------------- TOLDALÉK + ÁTJÁRÓ (u 17.5..24.5) ----------------
+  box(17.5, 21.5, -9.0, -0.6, 0.0, 0.6, mat.plinth, 0.02); box(17.5, 21.5, -9.0, -0.6, 0.6, 2.85, mat.wall, 0.02);
+  winOn([19.4,-0.6,1.7],[0,1,0],[1,0,0],1.3,0.85,0.0);
+  box(21.5, 24.5, -8.7, -8.45, 0.0, 2.7, mat.wall, 0.02); box(22.4,23.4,-8.46,-8.42,0.0,2.05,mat.green4,0.02);
+  obox([21.05,-4.7,3.12],[1,0,0],V.norm([0,8.9,-0.5]),V.norm([0,0.5,8.9]),3.6,4.45,0.05,mat.eternit);
+  for (const x of [21.6, 24.3]) box(x-0.06,x+0.06,-0.8,-0.68,0.0,2.85,mat.wood);
+  // ---------------- 3-AS GARÁZS (u 24.5..33, v -8.6..-1.2) – betekintés: 2 inverter + akku ----------------
+  box(24.75, 32.75, -8.35, -1.45, 0.0, 0.08, mat.concrete);                       // padló
+  const g3=(x0,x1,y0,y1)=>{ box(x0,x1,y0,y1,0.0,0.65,mat.maroon,0.01); box(x0,x1,y0,y1,0.65,2.8,mat.g3wall,0.01,{top:mat.cut}); };
+  g3(24.5,33.0,-1.45,-1.2); g3(24.5,33.0,-8.6,-8.35); g3(24.5,24.75,-8.35,-1.45); g3(32.75,33.0,-8.35,-1.45);
+  box(24.4,33.1,-1.3,-1.0,2.8,3.08,mat.fascia,0.02);                              // fekete homlokdeszka
+  obox([31.15,-4.85,3.0],[1,0,0],V.norm([0,7.6,-0.25]),V.norm([0,0.25,7.6]),1.95,3.85,0.05,mat.eternit);   // tető csak a jobb részen (bal: metszet)
+  box(25.0,27.7,-1.2,-1.14,0.02,2.22,mat.garDoor,0.02,{yp:mat.garDoor});         // szekcionált kapu
+  box(27.85,28.75,-1.2,-1.15,0.02,2.12,mat.brownDoor,0.02); box(28.15,28.45,-1.15,-1.13,1.2,1.85,mat.glass);
+  box(30.35,31.3,-1.2,-1.15,0.02,2.12,mat.white,0.02); box(30.6,30.75,-1.15,-1.13,0.9,1.9,mat.glass); box(30.9,31.05,-1.15,-1.13,0.9,1.9,mat.glass);
+  // belül: 2 inverter a hátsó falon, sín, kábelcsatorna, akku torony
+  for (const x0 of [25.25, 26.55]) {
+    box(x0, x0+0.88, -8.35, -8.02, 1.2, 2.45, mat.white, 0.06);
+    box(x0+0.2, x0+0.68, -8.02, -8.0, 1.92, 2.26, mat.dark); box(x0+0.26, x0+0.62, -8.0, -7.99, 1.97, 2.21, mat.screen);
+    sphere([x0+0.44, -7.99, 1.6], 0.035, mat.led, 8); box(x0+0.39, x0+0.49, -8.35, -8.25, 0.08, 1.2, mat.metal);
+  }
+  box(25.1, 27.6, -8.35, -8.22, 2.55, 2.68, mat.metal, 0.02);
+  box(27.9, 28.3, -8.35, -8.2, 1.4, 2.0, M('#C9CDD3',{rough:0.5}), 0.03);          // elosztó
+  box(28.55, 29.75, -8.3, -7.55, 0.08, 0.25, mat.battDark, 0.04);
+  for (let k=0;k<3;k++){ const z0=0.27+k*0.6; box(28.6,29.7,-8.25,-7.6,z0,z0+0.55,mat.batt,0.06); box(28.85,29.35,-7.6,-7.58,z0+0.38,z0+0.43,mat.led); }
+  // ---------------- NYITOTT FÉSZER (u 33..40.3) ----------------
+  box(33.0,40.3,-8.6,-8.35,0.0,2.45,mat.g3wall,0.01); box(40.0,40.3,-8.6,-4.2,0.0,2.45,mat.g3wall,0.01);
+  for (const x of [33.3,35.6,37.9,40.0]) box(x-0.08,x+0.08,-2.3,-2.14,0.0,2.62,mat.wood);
+  obox([36.65,-5.35,2.85],[1,0,0],V.norm([0,6.9,-0.35]),V.norm([0,0.35,6.9]),3.8,3.5,0.05,mat.eternit);
+  cyl([34.3,-6.8,0.0],UP,0.3,0.85,mat.red,16); box(35.6,36.6,-6.2,-5.4,0.0,0.55,mat.blue,0.1); box(37.2,38.0,-5.0,-4.3,0.0,0.4,mat.red,0.08);
+  for (const x of [34.4,36.2,38.4]) { cyl([x,-2.3,1.75],UP,0.14,0.18,mat.white,10); sphere([x,-2.3,2.0],0.17,mat.leafB,8); }
+  // ---------------- 4-ES GARÁZS (u 40.3..46.6, v -4.2..3.4) – állványos napelemek ----------------
+  box(40.25,46.65,-4.25,3.45,0.0,0.55,mat.terra,0.01); box(40.3,46.6,-4.2,3.4,0.55,2.7,mat.g4wall,0.02);
+  box(40.2,40.3,-1.75,1.25,0.0,2.15,mat.green4,0.02); box(40.18,40.2,-0.27,-0.23,0.0,2.15,mat.dark);
+  box(40.2,40.3,1.75,2.6,0.0,2.05,mat.green4,0.02);
+  obox([43.3,-0.4,2.86],[0,1,0],V.norm([1,0,0.06]),V.norm([-0.06,0,1]),4.25,3.55,0.05,mat.eternit);
+  box(40.3,41.0,3.4,4.1,0.0,1.5,mat.brick,0.02);                                  // tégla pillér
+  chainFence([40.65,4.1,0],[40.65,11.5,0],1.5);
+  // első tömb: -u felé (nyugat), 25°-os dőlés, 2 sor × 6 álló panel
+  { const t=25*Math.PI/180; const b=[Math.cos(t),0,Math.sin(t)], n=[-Math.sin(t),0,Math.cos(t)];
+    portraitArray([40.5,-3.85,3.25],[0,1,0],b,n,6,2);
+    for (const y of [-3.6,-0.4,2.8]) { box(40.7,40.82,y-0.05,y+0.05,2.9,3.3,mat.metal); box(43.6,43.72,y-0.05,y+0.05,2.9,4.75,mat.metal); } }
+  // hátsó, meredek tömb: +u felé (keleti/DK irány), 70°, 4 fekvő panel – hátoldaluk fehér
+  { const t=70*Math.PI/180; const b=[-Math.cos(t),0,Math.sin(t)], n=[Math.sin(t),0,Math.cos(t)];
+    landscapeArray([45.2,-3.9,4.25],[0,1,0],b,n,4);
+    for (const y of [-3.7,-0.4,2.9]) box(45.15,45.27,y-0.05,y+0.05,2.9,4.3,mat.metal);
+    box(44.9,45.3,-3.9,3.2,4.2,4.3,mat.metal); }
+  // ---------------- 5–6. MELLÉKÉPÜLETEK ----------------
+  box(29.8,40.5,9.3,10.9,0.0,2.4,mat.g4wall,0.03); box(29.6,40.7,9.1,11.1,2.4,2.58,mat.fascia,0.04);
+  box(28.2,40.5,10.9,13.4,0.0,2.6,mat.g4wall,0.03);
+  obox([34.35,12.15,2.82],[1,0,0],V.norm([0,1,-0.07]),V.norm([0,0.07,1]),6.4,1.45,0.06,mat.eternit);
+  // ---------------- LAKÓAUTÓ az udvaron ----------------
+  box(31.5,38.3,4.3,6.6,0.45,3.0,mat.camper,0.25); box(30.6,31.6,4.4,6.5,0.45,2.0,mat.camper,0.2);
+  box(30.62,31.1,4.6,6.3,1.35,1.9,mat.carGlass,0.05);
+  for (const x of [31.4,36.6]) for (const y of [4.25,6.65]) cyl([x,y,0.42],[0,y<5?-1:1,0],0.42,0.1,mat.tire,18,true,mat.rim);
+  box(31.8,37.8,6.6,6.62,1.9,2.4,mat.carGlass); box(33.0,34.2,6.6,6.62,0.7,2.4,mat.plinth);
+  // ---------------- ELŐKERT, KERÍTÉSEK, KAPU ----------------
+  panelFence([-9.0,3.4,0],[0.8,3.4,0]); panelFence([-9.0,-12.0,0],[-9.0,3.4,0]);
+  box(-4.2,-3.1,3.36,3.44,0.0,1.3,mat.fence);                                       // kiskapu
+  box(-9.2,-8.95,3.6,8.2,0.0,1.6,mat.gateGreen,0.02);                              // bejárati kapu (zöld háló)
+  sphere([-2.2,-8.0,0.75], 1.3, mat.leafB, 14, 0.65, 0.3); sphere([-6.5,-2.5,0.6], 0.9, mat.leafY, 12, 0.7, 0.3);
+  for (const [x,y] of [[-3.0,-4.5],[-5.5,-6.0],[-1.5,-1.5],[-6.8,0.8]]) { sphere([x,y,0.45],0.38,mat.leafB,10,0.9,0.25); sphere([x+0.15,y,0.7],0.12,mat.red,6); }
+  for (const t of [0,1]) tube(Array.from({length:13},(_,i)=>{ const a=i/12*Math.PI; return [-4.6+Math.cos(a)*0.7,-3.9+t*0.6,Math.sin(a)*0.7+1.6]; }),0.025,mat.dark);
+  // ---------------- VILLANYOSZLOP + bekötés az utcai oromfalra ----------------
+  cyl([-8.6,-9.5,0],UP,0.16,7.6,mat.pole,12); box(-8.7,-8.5,-10.5,-8.5,7.1,7.22,mat.pole,0.02);
+  const cat=(a,b,sag,n=20)=>{ const p=[]; for(let i=0;i<=n;i++){ const t=i/n; p.push([a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t,a[2]+(b[2]-a[2])*t-sag*4*t*(1-t)]); } return p; };
+  tube(cat([-8.6,-9.2,7.2],[-0.1,-6.2,5.5],0.8),0.03,mat.cable); tube(cat([-8.6,-9.8,7.2],[-0.1,-6.5,5.5],0.8),0.025,mat.cable);
+  // ---------------- FÁK ----------------
+  for (let i=0;i<23;i++){ const x=X0+1.6+i*2.75+(rnd()-0.5); tree(x, Y0+2.3+(rnd()-0.5)*1.4, 10+rnd()*5, 2.6+rnd()*1.0, i%5===2?1:(i%3===0?3:0)); }
+  for (let i=0;i<14;i++){ const x=X0+2.5+i*4.4+(rnd()-0.5)*2; if (x>23 && x<47) continue; tree(x, Y0+6.2+(rnd()-0.5)*1.4, 8+rnd()*4, 2.3+rnd()*0.8, i%4===1?1:(i%2?3:0)); }
+  for (let i=0;i<4;i++) tree(X0+1.6, -12+i*-1.6, 8+rnd()*3, 2.0, 0);
+  tree(31.4, 0.4, 8.2, 2.9, 3);            // a 3-as garázs előtti nagy fa
+  tree(36.6, -10.4, 8.0, 3.1, 3);          // fa a fészer mögött
+  tree(3.0, 11.0, 5.4, 2.6, 0); tree(13.0, 11.6, 5.8, 2.6, 3);
+  for (let i=0;i<8;i++) tree(X1-1.6+(rnd()-0.5), Y0+8+i*3.0, 7+rnd()*3, 1.9+rnd()*0.6, i%2?1:3);
+  hedgeLine([X0+1,Y1-0.9,0],[26.0,Y1-0.9,0],0.7,1.2);
+  // trambulin a kertben
+  tube(Array.from({length:25},(_,i)=>{ const a=i/24*2*Math.PI; return [49.4+Math.cos(a)*1.7,8.0+Math.sin(a)*1.7,0.9]; }),0.06,mat.blue);
+  for (let i=0;i<6;i++){ const a=i/6*2*Math.PI; cyl([49.4+Math.cos(a)*1.7,8.0+Math.sin(a)*1.7,0],UP,0.04,0.9,mat.dark,6,false); }
+}
+buildScene();
+
+// =====================================================================
+//  KAMERA, FÉNYEK
+// =====================================================================
+const TARGET = [21.8, -2.3, 0.0];
+const DIR = V.norm([-0.36, 1.0, 1.25]);
+const DIST = +(Q.get('dist') || 92);
+const EYE = V.add(TARGET, V.mul(DIR, DIST));
+const FOV = 30 * Math.PI / 180;
+const VIEW = lookAt(EYE, TARGET, [0,0,1]);
+const PROJ = persp(FOV, OUTW/OUTH, 30, 300);
+const FLIPX = new Float32Array([-1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+const VP = mmul(FLIPX, mmul(PROJ, VIEW));
+function sunVec(azDeg, elDeg){ const a=azDeg*Math.PI/180, e=elDeg*Math.PI/180; const h=[Math.sin(a),Math.cos(a)];
+  const eu=[Math.sin(AZ_U*Math.PI/180),Math.cos(AZ_U*Math.PI/180)], ev=[Math.sin(AZ_V*Math.PI/180),Math.cos(AZ_V*Math.PI/180)];
+  return V.norm([(h[0]*eu[0]+h[1]*eu[1])*Math.cos(e), (h[0]*ev[0]+h[1]*ev[1])*Math.cos(e), Math.sin(e)]); }
+const SUNDIR = NIGHT ? sunVec(200, 45) : sunVec(200, 40);
+const LC = [22, 0, 0];
+const LEYE = V.add(LC, V.mul(SUNDIR, 90));
+const LVIEW = lookAt(LEYE, LC, [0,0,1]);
+const LPROJ = ortho(-42, 42, -36, 36, 20, 180);
+const LVP = mmul(LPROJ, LVIEW);
+const L = NIGHT ? {
+  sun: V.mul(hex('#93ABDF'), 0.85), sky: V.mul(hex('#3B4F7C'),0.85), ground: V.mul(hex('#18202E'),0.6),
+  pts: [ [[5.0,-2.0,2.2],'#FFC46B',12], [[13.0,-2.0,2.2],'#FFC46B',12], [[6.2,1.6,2.3],'#FFB65C',9], [[27.3,-4.8,2.6],'#E8F1FF',14],
+         [[19.5,-3.0,2.0],'#FFC46B',6], [[-8.6,-9.5,6.4],'#FFE2B0',10], [[31.0,-0.6,2.2],'#FFC46B',5], [[36.0,-5.0,2.3],'#FFC46B',3] ],
+  bgIn:'#16233B', bgOut:'#070B14'
+} : {
+  sun: V.mul(hex('#FFEFD6'), 2.7), sky: V.mul(hex('#B9CFEF'),0.62), ground: V.mul(hex('#7E8F6C'),0.38),
+  pts: [ [[27.3,-4.8,2.5],'#FFFFFF',7] ], bgIn:'#1C2B45', bgOut:'#0A111E'
+};
+
+// =====================================================================
+//  WEBGL
+// =====================================================================
+const cv = document.getElementById('c'); cv.width=W; cv.height=H; cv.style.width=W+'px'; cv.style.height=H+'px';
+const gl = cv.getContext('webgl2', {antialias:false, preserveDrawingBuffer:true});
+gl.getExtension('EXT_color_buffer_float');
+function sh(type, src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s); if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)+'\n'+src.split('\n').map((l,i)=>(i+1)+': '+l).join('\n')); return s; }
+function prog(vs, fs){ const p=gl.createProgram(); gl.attachShader(p,sh(gl.VERTEX_SHADER,vs)); gl.attachShader(p,sh(gl.FRAGMENT_SHADER,fs)); gl.linkProgram(p); if(!gl.getProgramParameter(p,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p; }
+const u = (p,n)=>gl.getUniformLocation(p,n);
+
+const data = new Float32Array(VB);
+const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+const STR = 16*4; const lay=[[0,3,0],[1,3,3],[2,2,6],[3,3,8],[4,3,11],[5,2,14]];
+for (const [loc,n,off] of lay){ gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc,n,gl.FLOAT,false,STR,off*4); }
+const NV = data.length/16;
+
+function tex(w,h,ifmt,fmt,type,filter){ const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t); gl.texStorage2D(gl.TEXTURE_2D,1,ifmt,w,h);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,filter); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,filter);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE); return t; }
+
+// ---- 1. árnyéktérkép ----
+const SM = 4096;
+const shTex = tex(SM,SM,gl.DEPTH_COMPONENT32F,gl.DEPTH_COMPONENT,gl.FLOAT,gl.NEAREST);
+const shFB = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, shFB);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shTex, 0);
+gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
+const pShadow = prog(`#version 300 es
+layout(location=0) in vec3 aPos; uniform mat4 uLVP; void main(){ gl_Position=uLVP*vec4(aPos,1.0); }`,
+`#version 300 es
+precision highp float; void main(){}`);
+gl.viewport(0,0,SM,SM); gl.enable(gl.DEPTH_TEST); gl.clear(gl.DEPTH_BUFFER_BIT);
+gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2.0, 4.0);
+gl.useProgram(pShadow); gl.uniformMatrix4fv(u(pShadow,'uLVP'),false,LVP); gl.drawArrays(gl.TRIANGLES,0,NV);
+gl.disable(gl.POLYGON_OFFSET_FILL);
+
+// ---- 2. G-buffer + direkt fény ----
+const tDirect = tex(W,H,gl.RGBA16F,gl.RGBA,gl.HALF_FLOAT,gl.LINEAR);
+const tAmb    = tex(W,H,gl.RGBA16F,gl.RGBA,gl.HALF_FLOAT,gl.LINEAR);
+const tPos    = tex(W,H,gl.RGBA16F,gl.RGBA,gl.HALF_FLOAT,gl.NEAREST);
+const tNrm    = tex(W,H,gl.RGBA16F,gl.RGBA,gl.HALF_FLOAT,gl.NEAREST);
+const gFB = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,gFB);
+[tDirect,tAmb,tPos,tNrm].forEach((t,i)=>gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0+i,gl.TEXTURE_2D,t,0));
+const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER,rb); gl.renderbufferStorage(gl.RENDERBUFFER,gl.DEPTH_COMPONENT24,W,H);
+gl.framebufferRenderbuffer(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.RENDERBUFFER,rb);
+gl.drawBuffers([gl.COLOR_ATTACHMENT0,gl.COLOR_ATTACHMENT1,gl.COLOR_ATTACHMENT2,gl.COLOR_ATTACHMENT3]);
+
+const NPT = 8;
+const pMain = prog(`#version 300 es
+layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNrm; layout(location=2) in vec2 aUv;
+layout(location=3) in vec3 aAlb; layout(location=4) in vec3 aEmi; layout(location=5) in vec2 aMat;
+uniform mat4 uVP, uView, uLVP;
+out vec3 vPos, vNrm, vAlb, vEmi, vVPos; out vec2 vUv, vMat; out vec4 vL;
+void main(){ vPos=aPos; vNrm=aNrm; vUv=aUv; vAlb=aAlb; vEmi=aEmi; vMat=aMat; vL=uLVP*vec4(aPos,1.0);
+  vVPos=(uView*vec4(aPos,1.0)).xyz; gl_Position=uVP*vec4(aPos,1.0); }`,
+`#version 300 es
+precision highp float;
+in vec3 vPos, vNrm, vAlb, vEmi, vVPos; in vec2 vUv, vMat; in vec4 vL;
+uniform vec3 uEye, uSunDir, uSun, uSky, uGround; uniform mat3 uViewN;
+uniform sampler2D uShadow; uniform vec3 uPtPos[${NPT}]; uniform vec3 uPtCol[${NPT}];
+uniform float uNight;
+layout(location=0) out vec4 oDirect; layout(location=1) out vec4 oAmb; layout(location=2) out vec4 oPos; layout(location=3) out vec4 oNrm;
+float h21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  return mix(mix(h21(i),h21(i+vec2(1,0)),f.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x), f.y); }
+float shadowF(){
+  vec3 p = vL.xyz/vL.w*0.5+0.5; if(p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0) return 1.0;
+  float s=0.0; vec2 ts=vec2(1.0/4096.0)*1.3;
+  for(int x=-2;x<=2;x++) for(int y=-2;y<=2;y++){ float d=texture(uShadow,p.xy+vec2(x,y)*ts).r; s+= (p.z-0.0005<=d)?1.0:0.0; }
+  return s/25.0;
+}
+void main(){
+  vec3 n = normalize(vNrm);
+  vec3 alb = vAlb; float rough = vMat.y; int typ = int(vMat.x+0.5); float spec = (1.0-rough)*0.5; vec3 emi = vEmi;
+  vec2 uv = vUv;
+  if (typ==1) {                       // cserép
+    float row = floor(uv.y/0.32); float off = mod(row,2.0)*0.14;
+    float col = floor((uv.x+off)/0.28);
+    float ly = fract(uv.y/0.32), lx = fract((uv.x+off)/0.28);
+    float var = h21(vec2(row,col))*0.18;
+    alb *= (0.88+var) * mix(0.62,1.0,smoothstep(0.0,0.12,ly)) * mix(0.8,1.0,smoothstep(0.0,0.05,lx));
+  } else if (typ==2) {                // napelem cellák
+    vec2 q = uv/vec2(1.13,1.72); vec2 g = fract(q*vec2(6.0,10.0));
+    float line = step(g.x,0.04)+step(0.96,g.x)+step(g.y,0.03)+step(0.97,g.y);
+    float edge = step(q.x,0.025)+step(0.975,q.x)+step(q.y,0.018)+step(0.982,q.y);
+    alb = mix(alb*(0.85+0.3*q.y), vec3(0.55,0.6,0.68), clamp(line,0.0,1.0)*0.55);
+    alb = mix(alb, vec3(0.75,0.78,0.82), clamp(edge,0.0,1.0));
+    spec = 0.55; rough = 0.2;
+  } else if (typ==3) {                // parketta
+    float pr = floor(uv.x/0.18); float py = uv.y + h21(vec2(pr,1.0))*1.2; float pl = floor(py/1.2);
+    float lx = fract(uv.x/0.18), ly = fract(py/1.2);
+    alb *= (0.86+0.22*h21(vec2(pr,pl))) * mix(0.75,1.0,smoothstep(0.0,0.06,lx)) * mix(0.8,1.0,smoothstep(0.0,0.015,ly));
+    alb *= 0.93+0.07*vnoise(uv*vec2(40.0,3.0));
+  } else if (typ==4) {                // fű
+    alb *= 0.8+0.22*vnoise(vPos.xy*0.35)+0.12*vnoise(vPos.xy*1.7)+0.08*vnoise(vPos.xy*9.0);
+    alb *= 0.94+0.08*step(0.5,fract(vPos.x/3.2));
+  } else if (typ==5) {                // garázskapu bordák
+    float g = fract(uv.y/0.35); alb *= mix(0.72,1.0,smoothstep(0.0,0.08,g))*mix(1.0,0.9,smoothstep(0.85,1.0,g));
+  } else if (typ==7) {                // térkő
+    vec2 g = fract(uv/vec2(0.6,0.3)+vec2(mod(floor(uv.y/0.3),2.0)*0.5,0.0));
+    alb *= (0.9+0.12*h21(floor(uv/vec2(0.6,0.3)))) * mix(0.8,1.0,smoothstep(0.0,0.04,min(g.x,g.y)));
+  } else if (typ==9) {                // lomb: zajos színváltozás + alsó önárnyék
+    float nz = vnoise(vPos.xy*1.7+vPos.z*0.9)*0.6 + vnoise(vPos.xy*5.3-vPos.z*2.1)*0.4;
+    alb *= (0.7+0.6*nz) * mix(0.55,1.05,clamp(n.z*0.5+0.55,0.0,1.0));
+  } else if (typ==10) {               // kavics
+    alb *= 0.82+0.3*h21(floor(vPos.xy*9.0)) ;
+  } else if (typ==11) {               // trapézlemez
+    float g = fract(uv.x/0.35); alb *= mix(0.78,1.0,smoothstep(0.0,0.25,g)*smoothstep(1.0,0.6,g)); spec=0.35;
+  } else if (typ==6) { spec = 1.0; }
+  if (typ==8) spec = 0.7;
+
+  vec3 V = normalize(uEye - vPos);
+  float sh = shadowF();
+  float ndl = max(dot(n, uSunDir), 0.0);
+  vec3 H = normalize(uSunDir + V); float shin = mix(300.0, 12.0, rough);
+  float sp = pow(max(dot(n,H),0.0), shin) * spec * (shin+8.0)/(8.0*3.14159) * 0.25;
+  vec3 direct = (alb*ndl + vec3(sp)*ndl) * uSun * sh;
+  for (int i=0;i<${NPT};i++){ vec3 d = uPtPos[i]-vPos; float dd=dot(d,d); vec3 l=d*inversesqrt(dd);
+    float a = 1.0/(1.0+0.9*dd); direct += alb*max(dot(n,l),0.0)*uPtCol[i]*a; }
+  // fresnel ég-tükröződés (üveg, napelem)
+  float fr = pow(1.0-max(dot(n,V),0.0), 4.0);
+  vec3 skyRefl = mix(uGround, uSky*1.2, clamp(reflect(-V,n).z*0.5+0.5,0.0,1.0));
+  vec3 refl = skyRefl * (typ==6 ? (0.12+0.75*fr) : (typ==2 ? (0.04+0.3*fr) : spec*fr*0.15));
+  vec3 amb = alb * mix(uGround, uSky, n.z*0.5+0.5);
+  oDirect = vec4(direct + emi + refl, 1.0);
+  oAmb = vec4(amb, 1.0);
+  oPos = vec4(vVPos, 1.0);
+  oNrm = vec4(normalize(uViewN*n), 1.0);
+}`);
+gl.bindFramebuffer(gl.FRAMEBUFFER,gFB); gl.viewport(0,0,W,H);
+gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+gl.useProgram(pMain);
+gl.uniformMatrix4fv(u(pMain,'uVP'),false,VP); gl.uniformMatrix4fv(u(pMain,'uView'),false,VIEW); gl.uniformMatrix4fv(u(pMain,'uLVP'),false,LVP);
+gl.uniformMatrix3fv(u(pMain,'uViewN'),false,new Float32Array([VIEW[0],VIEW[1],VIEW[2],VIEW[4],VIEW[5],VIEW[6],VIEW[8],VIEW[9],VIEW[10]]));
+gl.uniform3fv(u(pMain,'uEye'),EYE); gl.uniform3fv(u(pMain,'uSunDir'),SUNDIR); gl.uniform3fv(u(pMain,'uSun'),L.sun);
+gl.uniform3fv(u(pMain,'uSky'),L.sky); gl.uniform3fv(u(pMain,'uGround'),L.ground); gl.uniform1f(u(pMain,'uNight'),NIGHT?1:0);
+const pp=[],pc=[]; for(let i=0;i<NPT;i++){ const t=L.pts[i]; pp.push(...(t?t[0]:[0,0,-50])); pc.push(...(t?V.mul(hex(t[1]),t[2]):[0,0,0])); }
+gl.uniform3fv(u(pMain,'uPtPos'),pp); gl.uniform3fv(u(pMain,'uPtCol'),pc);
+gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,shTex); gl.uniform1i(u(pMain,'uShadow'),0);
+gl.disable(gl.CULL_FACE);
+gl.drawArrays(gl.TRIANGLES,0,NV);
+
+// ---- 3. SSAO ----
+const tAO = tex(W,H,gl.RGBA16F,gl.RGBA,gl.HALF_FLOAT,gl.LINEAR);
+const aoFB = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,aoFB);
+gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tAO,0); gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+const FSQ = `#version 300 es
+out vec2 vUv; void main(){ vec2 p=vec2((gl_VertexID<<1)&2, gl_VertexID&2); vUv=p; gl_Position=vec4(p*2.0-1.0,0,1); }`;
+const KN=24; const kern=[]; { let s=7; const rnd=()=>{ s=(s*16807)%2147483647; return s/2147483647; };
+  for(let i=0;i<KN;i++){ let v=[rnd()*2-1,rnd()*2-1,rnd()]; v=V.norm(v); let sc=i/KN; sc=0.15+0.85*sc*sc; kern.push(...V.mul(v,sc*rnd()+0.05)); } }
+const pAO = prog(FSQ, `#version 300 es
+precision highp float; in vec2 vUv; out vec4 o;
+uniform sampler2D uPos, uNrm; uniform mat4 uProj; uniform vec3 uK[${KN}]; uniform float uR;
+float h21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+void main(){
+  vec4 P = texture(uPos,vUv); if(P.w<0.5){ o=vec4(1.0); return; }
+  vec3 n = normalize(texture(uNrm,vUv).xyz);
+  float a = h21(gl_FragCoord.xy)*6.2831; vec3 rv = vec3(cos(a),sin(a),0.0);
+  vec3 t = normalize(rv - n*dot(rv,n)); vec3 b = cross(n,t); mat3 TBN = mat3(t,b,n);
+  float occ = 0.0;
+  for(int i=0;i<${KN};i++){
+    vec3 s = P.xyz + TBN*uK[i]*uR;
+    vec4 c = uProj*vec4(s,1.0); vec2 suv = c.xy/c.w*0.5+0.5;
+    vec4 Q = texture(uPos,suv); if(Q.w<0.5) continue;
+    float rc = smoothstep(0.0,1.0,uR/abs(P.z-Q.z));
+    occ += (Q.z >= s.z + 0.03 ? 1.0 : 0.0)*rc;
+  }
+  o = vec4(vec3(1.0 - occ/float(${KN})), 1.0);
+}`);
+gl.useProgram(pAO); gl.disable(gl.DEPTH_TEST);
+gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,tPos); gl.uniform1i(u(pAO,'uPos'),0);
+gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,tNrm); gl.uniform1i(u(pAO,'uNrm'),1);
+gl.uniformMatrix4fv(u(pAO,'uProj'),false,mmul(FLIPX,PROJ)); gl.uniform3fv(u(pAO,'uK'),kern); gl.uniform1f(u(pAO,'uR'),1.3);
+gl.drawArrays(gl.TRIANGLES,0,3);
+
+// ---- 4. kompozit: AO blur, ég, tónusleképezés ----
+const pComp = prog(FSQ, `#version 300 es
+precision highp float; in vec2 vUv; out vec4 o;
+uniform sampler2D uD, uA, uAO, uPos; uniform vec2 uTex; uniform vec3 uTop, uBot; uniform float uNight;
+float h21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0); }
+void main(){
+  vec4 P = texture(uPos,vUv);
+  vec3 col;
+  if (P.w < 0.5) {
+    vec2 c = (vUv-vec2(0.5,0.55))*vec2(1.4545,1.0);
+    col = mix(uTop, uBot, smoothstep(0.0, 0.85, length(c)));
+    o = vec4(col,1.0); return;
+  }
+  float ao=0.0, wsum=0.0;
+  for(int x=-2;x<=2;x++) for(int y=-2;y<=2;y++){ vec2 q=vUv+vec2(x,y)*uTex*1.5; float w = texture(uPos,q).w; ao += texture(uAO,q).r*w; wsum+=w; }
+  ao = wsum>0.0? ao/wsum : 1.0; ao = pow(ao, 1.6);
+  vec3 d = texture(uD,vUv).rgb, a = texture(uA,vUv).rgb;
+  col = d*mix(1.0,ao,0.35) + a*ao;
+  col = aces(col*(uNight>0.5?1.25:0.74));
+  col = pow(col, vec3(1.0/2.2));
+  float lum = dot(col, vec3(0.299,0.587,0.114)); col = mix(vec3(lum), col, 0.97);
+  o = vec4(col,1.0);
+}`);
+gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
+gl.useProgram(pComp);
+[[tDirect,'uD'],[tAmb,'uA'],[tAO,'uAO'],[tPos,'uPos']].forEach(([t,n],i)=>{ gl.activeTexture(gl.TEXTURE0+i); gl.bindTexture(gl.TEXTURE_2D,t); gl.uniform1i(u(pComp,n),i); });
+gl.uniform2f(u(pComp,'uTex'),1/W,1/H);
+const srgb = h => hex(h).map(c=>Math.pow(c,1/2.2));
+gl.uniform3fv(u(pComp,'uTop'),srgb(L.bgIn)); gl.uniform3fv(u(pComp,'uBot'),srgb(L.bgOut)); gl.uniform1f(u(pComp,'uNight'),NIGHT?1:0);
+gl.drawArrays(gl.TRIANGLES,0,3);
+gl.finish();
+
+// ---- vetítés a buborékokhoz / folyamokhoz (1600×1100 logikai képpont) ----
+const proj = p => { const c = xform(VP, p); return [ +( (c[0]*0.5+0.5)*OUTW ).toFixed(1), +( (1-(c[1]*0.5+0.5))*OUTH ).toFixed(1) ]; };
+window.PROJECT = proj;
+window.DONE = { tris: NV/3 };
+</script></body></html>
